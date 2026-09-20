@@ -1,0 +1,1 @@
+# OIDC Shims for Zero Trust Workload Identity Manager
