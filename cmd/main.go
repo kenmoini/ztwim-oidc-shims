@@ -220,6 +220,7 @@ func main() {
 	if err := (&controller.OIDCShimReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Reader: mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "OIDCShim")
 		os.Exit(1)
@@ -227,6 +228,7 @@ func main() {
 	if err := (&controller.ClusterOIDCShimReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Reader: mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterOIDCShim")
 		os.Exit(1)

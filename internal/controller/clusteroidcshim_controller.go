@@ -21,8 +21,9 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	oidcshimv1alpha1 "github.com/kenmoini/ztwim-oidc-shims/api/v1alpha1"
 )
@@ -31,33 +32,31 @@ import (
 type ClusterOIDCShimReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// Reader reads pods straight from the API server, so counting matched pods does
+	// not require a cluster-wide pod cache.
+	Reader client.Reader
 }
 
 // +kubebuilder:rbac:groups=oidcshim.kemo.dev,resources=clusteroidcshims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=oidcshim.kemo.dev,resources=clusteroidcshims/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=oidcshim.kemo.dev,resources=clusteroidcshims/finalizers,verbs=update
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the ClusterOIDCShim object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
+// Reconcile validates the ClusterOIDCShim spec and reports the result in its status.
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/reconcile
 func (r *ClusterOIDCShimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
-
-	// TODO(user): your logic here
-
-	return ctrl.Result{}, nil
+	shim := &oidcshimv1alpha1.ClusterOIDCShim{}
+	if err := r.Get(ctx, req.NamespacedName, shim); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	return reconcileShim(ctx, r.Client, r.Reader, shim)
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterOIDCShimReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&oidcshimv1alpha1.ClusterOIDCShim{}).
+		For(&oidcshimv1alpha1.ClusterOIDCShim{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("clusteroidcshim").
 		Complete(r)
 }
