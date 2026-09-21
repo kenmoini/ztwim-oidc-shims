@@ -1,0 +1,9 @@
+apiVersion: openshift.kemo.dev/v1alpha1
+kind: ClusterOIDCShim
+metadata:
+  labels:
+    app.kubernetes.io/name: ztwim-oidc-shims
+    app.kubernetes.io/managed-by: kustomize
+  name: clusteroidcshim-sample
+spec:
+  # TODO(user): Add fields here
