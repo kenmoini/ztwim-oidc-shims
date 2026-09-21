@@ -58,6 +58,10 @@ var fileModePattern = regexp.MustCompile(`^0?[0-7]{3}$`)
 // reconcileShim validates shim, reports the outcome through the Ready condition and
 // observedGeneration, counts the pods currently carrying the shim's label, and writes
 // status only when it changed.
+//
+// A failing pod count does not cost the validation result: the Ready condition is still
+// written and the previous matchedPods is left in place, and the error is returned so the
+// count is retried.
 func reconcileShim(ctx context.Context, c client.Client, reader client.Reader, shim v1alpha1.Shim) (ctrl.Result, error) {
 	status := shim.ShimStatus()
 	before := status.DeepCopy()
@@ -76,16 +80,18 @@ func reconcileShim(ctx context.Context, c client.Client, reader client.Reader, s
 	meta.SetStatusCondition(&status.Conditions, condition)
 	status.ObservedGeneration = shim.GetGeneration()
 
-	matched, err := countMatchedPods(ctx, reader, shim)
-	if err != nil {
-		return ctrl.Result{}, err
+	matched, countErr := countMatchedPods(ctx, reader, shim)
+	if countErr == nil {
+		status.MatchedPods = ptr.To(matched)
 	}
-	status.MatchedPods = ptr.To(matched)
 
 	if !apiequality.Semantic.DeepEqual(before, status) {
 		if err := c.Status().Update(ctx, shim); err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating status of %s: %w", shim.ShimKey(), err)
 		}
+	}
+	if countErr != nil {
+		return ctrl.Result{}, countErr
 	}
 
 	return ctrl.Result{RequeueAfter: requeueInterval}, nil

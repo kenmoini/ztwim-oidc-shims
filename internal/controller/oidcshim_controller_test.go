@@ -18,106 +18,17 @@ package controller
 
 import (
 	"context"
-	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	oidcshimv1alpha1 "github.com/kenmoini/ztwim-oidc-shims/api/v1alpha1"
 )
-
-// envAudience is the name of the injected environment variable used in test specs.
-const envAudience = "AUDIENCE"
-
-// validShimSpec is a spec exercising parameters, templated audience, env and files.
-func validShimSpec() oidcshimv1alpha1.OIDCShimSpec {
-	return oidcshimv1alpha1.OIDCShimSpec{
-		Selection: oidcshimv1alpha1.SelectionSpec{
-			PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "demo"}},
-		},
-		Parameters: []oidcshimv1alpha1.Parameter{
-			{Name: "project", ValueFrom: oidcshimv1alpha1.ParameterSource{Static: ptr.To("demo")}},
-			{Name: "pool", ValueFrom: oidcshimv1alpha1.ParameterSource{Template: "{{ .project }}-pool"}},
-		},
-		Audience: "//iam.googleapis.com/projects/{{ .project }}",
-		Inject: oidcshimv1alpha1.InjectSpec{
-			Env:   []oidcshimv1alpha1.EnvVar{{Name: envAudience, Value: "{{ .pool }}"}},
-			Files: []oidcshimv1alpha1.FileSpec{{Path: "/etc/creds.json", Content: "{{ .tokenPath }}", Mode: "0600"}},
-		},
-	}
-}
-
-// forwardReferenceParameters has a parameter template referencing a parameter defined after it.
-func forwardReferenceParameters() []oidcshimv1alpha1.Parameter {
-	return []oidcshimv1alpha1.Parameter{
-		{Name: "first", ValueFrom: oidcshimv1alpha1.ParameterSource{Template: "{{ .second }}"}},
-		{Name: "second", ValueFrom: oidcshimv1alpha1.ParameterSource{Static: ptr.To("x")}},
-	}
-}
-
-// readyCondition returns the Ready condition of a shim status, or nil when absent.
-func readyCondition(status oidcshimv1alpha1.OIDCShimStatus) *metav1.Condition {
-	return meta.FindStatusCondition(status.Conditions, oidcshimv1alpha1.ConditionReady)
-}
-
-// createShimPod creates a pod carrying a shim label and schedules its removal.
-func createShimPod(ctx context.Context, name, namespace, labelKey, labelValue string) {
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			Labels:    map[string]string{labelKey: labelValue},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{Name: "app", Image: "busybox"}},
-		},
-	}
-	Expect(k8sClient.Create(ctx, pod)).To(Succeed())
-	DeferCleanup(func() {
-		Expect(k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0))).To(Succeed())
-	})
-}
-
-// failingReader is a client.Reader whose List always fails.
-type failingReader struct {
-	client.Reader
-}
-
-func (failingReader) List(context.Context, client.ObjectList, ...client.ListOption) error {
-	return errors.New("list boom")
-}
-
-// countingClient counts the status updates performed through it, so a test can prove
-// that an unchanged status is not written back.
-type countingClient struct {
-	client.Client
-	status *countingStatusWriter
-}
-
-func newCountingClient(c client.Client) *countingClient {
-	return &countingClient{Client: c, status: &countingStatusWriter{SubResourceWriter: c.Status()}}
-}
-
-func (c *countingClient) Status() client.StatusWriter { return c.status }
-
-type countingStatusWriter struct {
-	client.SubResourceWriter
-	updates int
-}
-
-func (w *countingStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
-	w.updates++
-	return w.SubResourceWriter.Update(ctx, obj, opts...)
-}
 
 var _ = Describe("OIDCShim Controller", func() {
 	ctx := context.Background()
@@ -166,6 +77,7 @@ var _ = Describe("OIDCShim Controller", func() {
 		Expect(condition).NotTo(BeNil())
 		Expect(condition.Status).To(Equal(metav1.ConditionTrue))
 		Expect(condition.Reason).To(Equal(oidcshimv1alpha1.ReasonValid))
+		Expect(condition.Message).To(BeEmpty())
 		Expect(condition.ObservedGeneration).To(Equal(refreshed.Generation))
 		Expect(refreshed.Status.ObservedGeneration).To(Equal(refreshed.Generation))
 		Expect(refreshed.Status.MatchedPods).To(HaveValue(Equal(int32(0))))
@@ -178,7 +90,8 @@ var _ = Describe("OIDCShim Controller", func() {
 		spec.Inject = oidcshimv1alpha1.InjectSpec{}
 		shim := createShim("forward-reference-shim", spec)
 
-		_, refreshed := reconcileShimNamed(shim.Name)
+		result, refreshed := reconcileShimNamed(shim.Name)
+		Expect(result.RequeueAfter).To(Equal(requeueInterval))
 
 		condition := readyCondition(refreshed.Status)
 		Expect(condition).NotTo(BeNil())
@@ -190,10 +103,11 @@ var _ = Describe("OIDCShim Controller", func() {
 
 	It("reports an unknown template key in inject.env as invalid", func() {
 		spec := validShimSpec()
-		spec.Inject.Env = []oidcshimv1alpha1.EnvVar{{Name: envAudience, Value: "{{ .nope }}"}}
+		spec.Inject.Env = []oidcshimv1alpha1.EnvVar{{Name: envAudience, Value: unknownKeyTemplate}}
 		shim := createShim("unknown-env-key-shim", spec)
 
-		_, refreshed := reconcileShimNamed(shim.Name)
+		result, refreshed := reconcileShimNamed(shim.Name)
+		Expect(result.RequeueAfter).To(Equal(requeueInterval))
 
 		condition := readyCondition(refreshed.Status)
 		Expect(condition).NotTo(BeNil())
@@ -226,13 +140,37 @@ var _ = Describe("OIDCShim Controller", func() {
 		Expect(second.ResourceVersion).To(Equal(first.ResourceVersion))
 	})
 
-	It("returns a pod listing error without writing status", func() {
+	It("returns a pod listing error but still records the validation result", func() {
 		counting := newCountingClient(k8sClient)
 		shim := createShim("list-error-shim", validShimSpec())
 
 		_, err := reconcileShim(ctx, counting, failingReader{}, shim)
 		Expect(err).To(MatchError(ContainSubstring("list boom")))
-		Expect(counting.status.updates).To(BeZero())
+		Expect(counting.status.updates).To(Equal(1))
+
+		key := types.NamespacedName{Name: shim.Name, Namespace: testNamespace}
+		refreshed := &oidcshimv1alpha1.OIDCShim{}
+		Expect(k8sClient.Get(ctx, key, refreshed)).To(Succeed())
+
+		condition := readyCondition(refreshed.Status)
+		Expect(condition).NotTo(BeNil())
+		Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+		Expect(refreshed.Status.ObservedGeneration).To(Equal(refreshed.Generation))
+		// The count failed, so no pod number is claimed.
+		Expect(refreshed.Status.MatchedPods).To(BeNil())
+	})
+
+	It("keeps the previous matchedPods when a later pod count fails", func() {
+		shim := createShim("stale-count-shim", validShimSpec())
+		createShimPod(ctx, "stale-count-pod", testNamespace,
+			oidcshimv1alpha1.ShimLabelKey(shim.Name), oidcshimv1alpha1.ShimLabelValueNamespaced)
+
+		_, refreshed := reconcileShimNamed(shim.Name)
+		Expect(refreshed.Status.MatchedPods).To(HaveValue(Equal(int32(1))))
+
+		_, err := reconcileShim(ctx, k8sClient, failingReader{}, refreshed)
+		Expect(err).To(HaveOccurred())
+		Expect(refreshed.Status.MatchedPods).To(HaveValue(Equal(int32(1))))
 	})
 
 	It("ignores a shim that no longer exists", func() {

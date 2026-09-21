@@ -83,6 +83,7 @@ var _ = Describe("ClusterOIDCShim Controller", func() {
 		Expect(condition).NotTo(BeNil())
 		Expect(condition.Status).To(Equal(metav1.ConditionTrue))
 		Expect(condition.Reason).To(Equal(oidcshimv1alpha1.ReasonValid))
+		Expect(condition.Message).To(BeEmpty())
 		Expect(condition.ObservedGeneration).To(Equal(refreshed.Generation))
 		Expect(refreshed.Status.ObservedGeneration).To(Equal(refreshed.Generation))
 		Expect(refreshed.Status.MatchedPods).To(HaveValue(Equal(int32(0))))
@@ -95,7 +96,8 @@ var _ = Describe("ClusterOIDCShim Controller", func() {
 		spec.Inject = oidcshimv1alpha1.InjectSpec{}
 		shim := createShim("forward-reference-cluster-shim", spec)
 
-		_, refreshed := reconcileShimNamed(shim.Name)
+		result, refreshed := reconcileShimNamed(shim.Name)
+		Expect(result.RequeueAfter).To(Equal(requeueInterval))
 
 		condition := readyCondition(refreshed.Status)
 		Expect(condition).NotTo(BeNil())
@@ -107,10 +109,11 @@ var _ = Describe("ClusterOIDCShim Controller", func() {
 
 	It("reports an unknown template key in inject.env as invalid", func() {
 		spec := validShimSpec()
-		spec.Inject.Env = []oidcshimv1alpha1.EnvVar{{Name: envAudience, Value: "{{ .nope }}"}}
+		spec.Inject.Env = []oidcshimv1alpha1.EnvVar{{Name: envAudience, Value: unknownKeyTemplate}}
 		shim := createShim("unknown-env-key-cluster-shim", spec)
 
-		_, refreshed := reconcileShimNamed(shim.Name)
+		result, refreshed := reconcileShimNamed(shim.Name)
+		Expect(result.RequeueAfter).To(Equal(requeueInterval))
 
 		condition := readyCondition(refreshed.Status)
 		Expect(condition).NotTo(BeNil())
