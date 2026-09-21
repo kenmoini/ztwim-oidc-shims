@@ -24,7 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	openshiftv1alpha1 "github.com/kenmoini/ztwim-oidc-shims/api/v1alpha1"
+	oidcshimv1alpha1 "github.com/kenmoini/ztwim-oidc-shims/api/v1alpha1"
 )
 
 // ClusterOIDCShimReconciler reconciles a ClusterOIDCShim object
@@ -33,9 +33,9 @@ type ClusterOIDCShimReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=openshift.kemo.dev,resources=clusteroidcshims,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=openshift.kemo.dev,resources=clusteroidcshims/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=openshift.kemo.dev,resources=clusteroidcshims/finalizers,verbs=update
+// +kubebuilder:rbac:groups=oidcshim.kemo.dev,resources=clusteroidcshims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=oidcshim.kemo.dev,resources=clusteroidcshims/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=oidcshim.kemo.dev,resources=clusteroidcshims/finalizers,verbs=update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -57,7 +57,7 @@ func (r *ClusterOIDCShimReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterOIDCShimReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&openshiftv1alpha1.ClusterOIDCShim{}).
+		For(&oidcshimv1alpha1.ClusterOIDCShim{}).
 		Named("clusteroidcshim").
 		Complete(r)
 }

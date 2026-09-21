@@ -27,7 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	openshiftv1alpha1 "github.com/kenmoini/ztwim-oidc-shims/api/v1alpha1"
+	oidcshimv1alpha1 "github.com/kenmoini/ztwim-oidc-shims/api/v1alpha1"
 )
 
 var _ = Describe("ClusterOIDCShim Controller", func() {
@@ -38,20 +38,20 @@ var _ = Describe("ClusterOIDCShim Controller", func() {
 
 		typeNamespacedName := types.NamespacedName{
 			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+			Namespace: testNamespace,
 		}
-		clusteroidcshim := &openshiftv1alpha1.ClusterOIDCShim{}
+		clusteroidcshim := &oidcshimv1alpha1.ClusterOIDCShim{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind ClusterOIDCShim")
 			err := k8sClient.Get(ctx, typeNamespacedName, clusteroidcshim)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &openshiftv1alpha1.ClusterOIDCShim{
+				resource := &oidcshimv1alpha1.ClusterOIDCShim{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
-						Namespace: "default",
+						Namespace: testNamespace,
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: oidcshimv1alpha1.ClusterOIDCShimSpec{OIDCShimSpec: oidcshimv1alpha1.OIDCShimSpec{Audience: "test"}},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
@@ -59,7 +59,7 @@ var _ = Describe("ClusterOIDCShim Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &openshiftv1alpha1.ClusterOIDCShim{}
+			resource := &oidcshimv1alpha1.ClusterOIDCShim{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 

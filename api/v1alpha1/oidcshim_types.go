@@ -20,28 +20,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
-// OIDCShimSpec defines the desired state of OIDCShim.
-type OIDCShimSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// Foo is an example field of OIDCShim. Edit oidcshim_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
-}
-
-// OIDCShimStatus defines the observed state of OIDCShim.
-type OIDCShimStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-}
-
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.provider`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Pods",type=integer,JSONPath=`.status.matchedPods`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 58",message="metadata.name must be at most 58 characters"
 
-// OIDCShim is the Schema for the oidcshims API.
+// OIDCShim injects SPIFFE JWT-SVID based OIDC federation into pods of its own namespace.
 type OIDCShim struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

@@ -32,12 +32,15 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	openshiftv1alpha1 "github.com/kenmoini/ztwim-oidc-shims/api/v1alpha1"
+	oidcshimv1alpha1 "github.com/kenmoini/ztwim-oidc-shims/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
+
+// testNamespace is the namespace used by the controller tests.
+const testNamespace = "default"
 
 var (
 	ctx       context.Context
@@ -59,7 +62,7 @@ var _ = BeforeSuite(func() {
 	ctx, cancel = context.WithCancel(context.TODO())
 
 	var err error
-	err = openshiftv1alpha1.AddToScheme(scheme.Scheme)
+	err = oidcshimv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme

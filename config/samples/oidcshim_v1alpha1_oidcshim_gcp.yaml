@@ -1,0 +1,71 @@
+# GCP Workload Identity Federation via a namespaced OIDCShim.
+#
+# Enrol a Namespace, ServiceAccount or Pod with the annotation or label
+#   oidcshim.kemo.dev/shim: gcp
+# and annotate it (Pod > ServiceAccount > Namespace precedence) with:
+#   iam.gke.io/gcp-project-number:    "123456789012"
+#   iam.gke.io/gcp-wid-pool:          "my-pool"
+#   iam.gke.io/gcp-wid-provider:      "my-provider"
+#   iam.gke.io/gcp-wid-pool-location: "global"          (optional)
+#   iam.gke.io/gcp-service-account:   "app@proj.iam.gserviceaccount.com"
+#
+# The injected spiffe-helper keeps a JWT-SVID with the pool/provider audience on disk and
+# the Google SDK exchanges it via STS using the rendered external_account key file.
+apiVersion: oidcshim.kemo.dev/v1alpha1
+kind: OIDCShim
+metadata:
+  labels:
+    app.kubernetes.io/name: ztwim-oidc-shims
+    app.kubernetes.io/managed-by: kustomize
+  name: gcp
+spec:
+  provider: google
+  selection:
+    enrollment:
+      namespaces: true
+      serviceAccounts: true
+      pods: true
+  parameters:
+    - name: projectNumber
+      valueFrom:
+        annotation: iam.gke.io/gcp-project-number
+      required: true
+    - name: pool
+      valueFrom:
+        annotation: iam.gke.io/gcp-wid-pool
+      required: true
+    - name: poolProvider
+      valueFrom:
+        annotation: iam.gke.io/gcp-wid-provider
+      required: true
+    - name: poolLocation
+      valueFrom:
+        annotation: iam.gke.io/gcp-wid-pool-location
+      default: global
+    - name: googleServiceAccount
+      valueFrom:
+        annotation: iam.gke.io/gcp-service-account
+      required: true
+    - name: audience
+      valueFrom:
+        template: "https://iam.googleapis.com/projects/{{ .projectNumber }}/locations/{{ .poolLocation }}/workloadIdentityPools/{{ .pool }}/providers/{{ .poolProvider }}"
+  audience: "{{ .audience }}"
+  inject:
+    env:
+      - name: GOOGLE_APPLICATION_CREDENTIALS
+        value: "{{ .tokenDir }}/key.json"
+    files:
+      - path: /var/run/secrets/oidcshim/gcp/key.json
+        content: |
+          {
+            "universe_domain": "googleapis.com",
+            "type": "external_account",
+            "audience": "//iam.googleapis.com/projects/{{ .projectNumber }}/locations/{{ .poolLocation }}/workloadIdentityPools/{{ .pool }}/providers/{{ .poolProvider }}",
+            "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+            "token_url": "https://sts.googleapis.com/v1/token",
+            "credential_source": {
+              "file": "{{ .tokenPath }}",
+              "format": { "type": "text" }
+            },
+            "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{{ .googleServiceAccount }}:generateAccessToken"
+          }

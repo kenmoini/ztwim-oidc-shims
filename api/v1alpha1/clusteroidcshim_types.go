@@ -20,35 +20,32 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
-// ClusterOIDCShimSpec defines the desired state of ClusterOIDCShim.
+// ClusterOIDCShimSpec is the desired state of a ClusterOIDCShim.
 type ClusterOIDCShimSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	OIDCShimSpec `json:",inline"`
 
-	// Foo is an example field of ClusterOIDCShim. Edit clusteroidcshim_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
-}
-
-// ClusterOIDCShimStatus defines the observed state of ClusterOIDCShim.
-type ClusterOIDCShimStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// ConfigMapNamespace is where configMapKeyRef parameters are resolved.
+	// Defaults to the pod's namespace.
+	// +optional
+	ConfigMapNamespace string `json:"configMapNamespace,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.provider`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Pods",type=integer,JSONPath=`.status.matchedPods`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 58",message="metadata.name must be at most 58 characters"
 
-// ClusterOIDCShim is the Schema for the clusteroidcshims API.
+// ClusterOIDCShim injects SPIFFE JWT-SVID based OIDC federation into pods in any namespace.
 type ClusterOIDCShim struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   ClusterOIDCShimSpec   `json:"spec,omitempty"`
-	Status ClusterOIDCShimStatus `json:"status,omitempty"`
+	Spec   ClusterOIDCShimSpec `json:"spec,omitempty"`
+	Status OIDCShimStatus      `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -1,0 +1,52 @@
+# Azure Workload Identity federation using a cluster-scoped ClusterOIDCShim.
+#
+# Enrol with the annotation or label oidcshim.kemo.dev/shim: azure and set
+#   azure.workload.identity/client-id: "<app registration client id>"
+#   azure.workload.identity/tenant-id: "<tenant id>"
+# on the Pod, ServiceAccount or Namespace. The federated credential on the app
+# registration must trust the SPIRE issuer, the SPIFFE ID as subject, and the
+# audience api://AzureADTokenExchange.
+#
+# Azure SDKs read AZURE_FEDERATED_TOKEN_FILE + AZURE_CLIENT_ID + AZURE_TENANT_ID and
+# perform the token exchange themselves (WorkloadIdentityCredential).
+apiVersion: oidcshim.kemo.dev/v1alpha1
+kind: ClusterOIDCShim
+metadata:
+  labels:
+    app.kubernetes.io/name: ztwim-oidc-shims
+    app.kubernetes.io/managed-by: kustomize
+  name: azure
+spec:
+  provider: azure
+  selection:
+    enrollment:
+      namespaces: true
+      serviceAccounts: true
+      pods: true
+  parameters:
+    - name: clientId
+      valueFrom:
+        annotation: azure.workload.identity/client-id
+      required: true
+    - name: tenantId
+      valueFrom:
+        annotation: azure.workload.identity/tenant-id
+      required: true
+    - name: authorityHost
+      valueFrom:
+        annotation: azure.workload.identity/authority-host
+      default: https://login.microsoftonline.com/
+  audience: api://AzureADTokenExchange
+  token:
+    mountPath: /var/run/secrets/azure/tokens
+    fileName: azure-identity-token
+  inject:
+    env:
+      - name: AZURE_CLIENT_ID
+        value: "{{ .clientId }}"
+      - name: AZURE_TENANT_ID
+        value: "{{ .tenantId }}"
+      - name: AZURE_AUTHORITY_HOST
+        value: "{{ .authorityHost }}"
+      - name: AZURE_FEDERATED_TOKEN_FILE
+        value: "{{ .tokenPath }}"

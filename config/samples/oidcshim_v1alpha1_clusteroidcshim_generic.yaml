@@ -1,0 +1,60 @@
+# Generic OIDC federation using a cluster-scoped ClusterOIDCShim.
+#
+# Matches automatically every pod whose ServiceAccount carries the label
+# example.com/oidc-federation: "true" in a namespace labelled example.com/oidc: enabled,
+# and additionally any object enrolled with oidcshim.kemo.dev/shim: generic.
+#
+# The audience and a client identifier come from a ConfigMap resolved in the
+# spec.configMapNamespace rather than from annotations, and the token path is exported
+# through a plain environment variable for the application to consume however it likes.
+apiVersion: oidcshim.kemo.dev/v1alpha1
+kind: ClusterOIDCShim
+metadata:
+  labels:
+    app.kubernetes.io/name: ztwim-oidc-shims
+    app.kubernetes.io/managed-by: kustomize
+  name: generic
+spec:
+  provider: generic
+  configMapNamespace: oidc-federation
+  selection:
+    enrollment:
+      namespaces: true
+      serviceAccounts: true
+      pods: true
+    namespaceSelector:
+      matchLabels:
+        example.com/oidc: enabled
+    serviceAccountSelector:
+      matchLabels:
+        example.com/oidc-federation: "true"
+  parameters:
+    - name: audience
+      valueFrom:
+        configMapKeyRef:
+          name: oidc-federation
+          key: audience
+      required: true
+    - name: clientId
+      valueFrom:
+        configMapKeyRef:
+          name: oidc-federation
+          key: clientId
+      default: ""
+    - name: subject
+      valueFrom:
+        template: "ns/{{ .podNamespace }}/sa/{{ .serviceAccountName }}"
+  audience: "{{ .audience }}"
+  token:
+    fileName: jwt
+    fileMode: "0640"
+  inject:
+    env:
+      - name: OIDC_TOKEN_FILE
+        value: "{{ .tokenPath }}"
+      - name: OIDC_CLIENT_ID
+        value: "{{ .clientId }}"
+      - name: OIDC_EXPECTED_SUBJECT
+        value: "{{ .subject }}"
+    containers:
+      - app

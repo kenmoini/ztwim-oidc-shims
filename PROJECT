@@ -16,7 +16,7 @@ resources:
     namespaced: true
   controller: true
   domain: kemo.dev
-  group: openshift
+  group: oidcshim
   kind: OIDCShim
   path: github.com/kenmoini/ztwim-oidc-shims/api/v1alpha1
   version: v1alpha1
@@ -24,7 +24,7 @@ resources:
     crdVersion: v1
   controller: true
   domain: kemo.dev
-  group: openshift
+  group: oidcshim
   kind: ClusterOIDCShim
   path: github.com/kenmoini/ztwim-oidc-shims/api/v1alpha1
   version: v1alpha1

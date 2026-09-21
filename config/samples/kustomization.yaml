@@ -1,5 +1,7 @@
 ## Append samples of your project ##
 resources:
-- openshift_v1alpha1_oidcshim.yaml
-- openshift_v1alpha1_clusteroidcshim.yaml
+- oidcshim_v1alpha1_oidcshim_gcp.yaml
+- oidcshim_v1alpha1_oidcshim_aws.yaml
+- oidcshim_v1alpha1_clusteroidcshim_azure.yaml
+- oidcshim_v1alpha1_clusteroidcshim_generic.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
