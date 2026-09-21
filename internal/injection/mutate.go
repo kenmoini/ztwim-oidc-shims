@@ -128,14 +128,13 @@ func addVolumes(pod *corev1.Pod, plan *Plan) {
 		FieldRef: annotationFieldRef(v1alpha1.HelperConfAnnotation(plan.ShimName)),
 	}}
 	for i, f := range plan.Files {
-		item := corev1.DownwardAPIVolumeFile{
+		// BuildPlan validates every file mode, so this parse cannot fail for a plan it produced.
+		mode, _ := parseFileMode(f.Mode)
+		items = append(items, corev1.DownwardAPIVolumeFile{
 			Path:     filesSubPath(i),
 			FieldRef: annotationFieldRef(fileAnnotation(plan.ShimName, i)),
-		}
-		if mode, err := parseFileMode(f.Mode); err == nil {
-			item.Mode = ptrTo(mode)
-		}
-		items = append(items, item)
+			Mode:     ptrTo(mode),
+		})
 	}
 
 	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{

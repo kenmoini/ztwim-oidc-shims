@@ -728,3 +728,36 @@ func TestBuildPlanDoesNotAliasShimOverrides(t *testing.T) {
 		t.Errorf("sidecar securityContext.runAsUser = %d, want it independent of the init container", got)
 	}
 }
+
+func TestBuildPlanDuplicateFilePaths(t *testing.T) {
+	shim := gcpShim()
+	shim.Spec.Inject.Files = append(shim.Spec.Inject.Files, v1alpha1.FileSpec{
+		Path:    "/etc/gcp/credential-configuration.json",
+		Content: "second file at the same path",
+	})
+
+	pod := basePod()
+	tok := ResolveToken("gcp", shim.Spec.Token)
+	_, err := BuildPlan(shim, valuesFor(shim, pod, tok, gcpParams()), tok, testDefaults())
+	if err == nil {
+		t.Fatal("BuildPlan() error = nil, want a duplicate path error")
+	}
+	if !strings.Contains(err.Error(), "/etc/gcp/credential-configuration.json") {
+		t.Errorf("error = %q, want it to name the duplicated path", err)
+	}
+}
+
+func TestBuildPlanFilePathCollidesWithTokenMountPath(t *testing.T) {
+	shim := gcpShim()
+	shim.Spec.Inject.Files[0].Path = "/var/run/secrets/oidcshim/gcp"
+
+	pod := basePod()
+	tok := ResolveToken("gcp", shim.Spec.Token)
+	_, err := BuildPlan(shim, valuesFor(shim, pod, tok, gcpParams()), tok, testDefaults())
+	if err == nil {
+		t.Fatal("BuildPlan() error = nil, want a token mountPath collision error")
+	}
+	if !strings.Contains(err.Error(), "/var/run/secrets/oidcshim/gcp") {
+		t.Errorf("error = %q, want it to name the colliding path", err)
+	}
+}

@@ -105,7 +105,9 @@ func Builtins(shim v1alpha1.Shim, pod *corev1.Pod, podNamespace string, tok Toke
 	}
 }
 
-// RenderedFile is one inject.files entry after templating.
+// RenderedFile is one inject.files entry after templating. Within a Plan produced by
+// BuildPlan every Path is distinct and differs from Token.MountPath, and every Mode is a
+// valid octal string.
 type RenderedFile struct {
 	Path    string
 	Content string
@@ -198,11 +200,24 @@ func BuildPlan(shim v1alpha1.Shim, values params.Values, tok Token, d Defaults) 
 	}
 
 	renderedBytes := 0
+	// Every mountPath a targeted container receives must be unique: the API server rejects a
+	// container carrying two volumeMounts at the same mountPath, so a shim that would produce
+	// one is refused here rather than breaking admission for every matching pod.
+	seenPaths := map[string]struct{}{tok.MountPath: {}}
 	for i, f := range spec.Inject.Files {
 		content, err := params.Render("file", f.Content, values)
 		if err != nil {
 			return nil, fmt.Errorf("injection: shim %q: render inject.files[%d] %q: %w", name, i, f.Path, err)
 		}
+		if _, dup := seenPaths[f.Path]; dup {
+			if f.Path == tok.MountPath {
+				return nil, fmt.Errorf("injection: shim %q: inject.files[%d] path %q collides with the token mountPath",
+					name, i, f.Path)
+			}
+			return nil, fmt.Errorf("injection: shim %q: inject.files[%d] path %q is already used by an earlier file",
+				name, i, f.Path)
+		}
+		seenPaths[f.Path] = struct{}{}
 		mode := f.Mode
 		if mode == "" {
 			mode = defaultFileMode
