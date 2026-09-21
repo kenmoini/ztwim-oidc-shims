@@ -165,16 +165,44 @@ func IsCertManagerCRDsInstalled() bool {
 	return false
 }
 
-// LoadImageToKindClusterWithName loads a local docker image to the kind cluster
+// LoadImageToKindClusterWithName loads a locally built image into the kind cluster.
+//
+// It deliberately avoids `kind load docker-image`, which only knows how to talk to a Docker
+// daemon: instead the image is exported with the configured container tool (CONTAINER_TOOL,
+// defaulting to "docker") and the resulting archive is handed to `kind load image-archive`.
+// That path works identically for docker, podman and nerdctl.
 func LoadImageToKindClusterWithName(name string) error {
 	cluster := "kind"
-	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
+	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok && v != "" {
 		cluster = v
 	}
-	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
-	cmd := exec.Command("kind", kindOptions...)
-	_, err := Run(cmd)
-	return err
+	containerTool := "docker"
+	if v, ok := os.LookupEnv("CONTAINER_TOOL"); ok && v != "" {
+		containerTool = v
+	}
+
+	archive, err := os.CreateTemp("", "kind-image-archive-*.tar")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary image archive: %w", err)
+	}
+	archivePath := archive.Name()
+	if err := archive.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary image archive %q: %w", archivePath, err)
+	}
+	defer func() {
+		if err := os.Remove(archivePath); err != nil && !os.IsNotExist(err) {
+			warnError(err)
+		}
+	}()
+
+	// nolint:gosec // containerTool is operator-supplied configuration, not untrusted input.
+	if _, err := Run(exec.Command(containerTool, "save", name, "-o", archivePath)); err != nil {
+		return fmt.Errorf("failed to save image %q with %q: %w", name, containerTool, err)
+	}
+	if _, err := Run(exec.Command("kind", "load", "image-archive", archivePath, "--name", cluster)); err != nil {
+		return fmt.Errorf("failed to load image archive into kind cluster %q: %w", cluster, err)
+	}
+	return nil
 }
 
 // GetNonEmptyLines converts given command output string into individual objects

@@ -22,10 +22,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/kenmoini/ztwim-oidc-shims/test/utils"
 )
@@ -41,6 +44,58 @@ const metricsServiceName = "ztwim-oidc-shims-controller-manager-metrics-service"
 
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "ztwim-oidc-shims-metrics-binding"
+
+// webhookConfigName is the MutatingWebhookConfiguration deployed by config/default.
+const webhookConfigName = "ztwim-oidc-shims-mutating-webhook-configuration"
+
+// webhookServiceName is the service backing the pod mutating webhook.
+const webhookServiceName = "ztwim-oidc-shims-webhook-service"
+
+// Fixtures for the injection specs.
+const (
+	// shimNamespace is the throwaway namespace holding the OIDCShim and the workload pods.
+	shimNamespace = "oidcshim-e2e"
+	// kubeSystemNamespace is excluded by the webhook namespaceSelector, so it is the negative case.
+	kubeSystemNamespace = "kube-system"
+	// shimName matches metadata.name of config/samples/oidcshim_v1alpha1_oidcshim_gcp.yaml.
+	shimName = "gcp"
+
+	appPodName       = "app"
+	optOutPodName    = "app-opted-out"
+	negativePodName  = "app-not-enrolled"
+	appContainerName = "app"
+	appImage         = "busybox:1.36"
+
+	// Names the webhook gives to the artifacts it injects for the "gcp" shim.
+	injectedPrefix       = "oidcshim-"
+	initContainerName    = injectedPrefix + "init-" + shimName
+	refreshContainerName = injectedPrefix + "refresh-" + shimName
+	tokenVolumeName      = injectedPrefix + "token-" + shimName
+	configVolumeName     = injectedPrefix + "config-" + shimName
+	socketVolumeName     = "spiffe-workload-api"
+
+	// Metadata keys, mirroring api/v1alpha1/common_types.go.
+	enrollmentAnnotation     = "oidcshim.kemo.dev/shim"
+	injectAnnotation         = "oidcshim.kemo.dev/inject"
+	statusAnnotation         = "oidcshim.kemo.dev/status"
+	statusInjected           = "injected"
+	shimLabel                = "oidcshim.kemo.dev/shim-" + shimName
+	shimLabelValueNamespaced = "namespaced"
+
+	// googleCredentialsEnv is the env var the GCP sample injects into app containers.
+	googleCredentialsEnv = "GOOGLE_APPLICATION_CREDENTIALS"
+)
+
+// shimNamespaceAnnotations enrol the workload namespace into the "gcp" shim and supply the
+// five iam.gke.io parameters config/samples/oidcshim_v1alpha1_oidcshim_gcp.yaml resolves.
+var shimNamespaceAnnotations = []string{
+	enrollmentAnnotation + "=" + shimName,
+	"iam.gke.io/gcp-project-number=123456789012",
+	"iam.gke.io/gcp-wid-pool=oidcshim-e2e-pool",
+	"iam.gke.io/gcp-wid-provider=oidcshim-e2e-provider",
+	"iam.gke.io/gcp-wid-pool-location=global",
+	"iam.gke.io/gcp-service-account=oidcshim-e2e@example.iam.gserviceaccount.com",
+}
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
@@ -257,17 +312,231 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
+	})
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput := getMetricsOutput()
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+	// Injection checks. No SPIRE is installed on the e2e cluster, so the injected pods never
+	// become Ready (the csi.spiffe.io driver is absent and the workload API volume cannot be
+	// mounted). Every assertion below is therefore on the *shape* of the admitted pod spec,
+	// which is exactly what the mutating webhook is responsible for.
+	Context("OIDCShim injection", Ordered, func() {
+		BeforeAll(func() {
+			By("creating the workload namespace")
+			cmd := exec.Command("kubectl", "create", "ns", shimNamespace)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the workload namespace")
+
+			By("enrolling the namespace into the gcp shim")
+			annotateArgs := append([]string{"annotate", "--overwrite", "ns", shimNamespace},
+				shimNamespaceAnnotations...)
+			cmd = exec.Command("kubectl", annotateArgs...)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to annotate the workload namespace")
+
+			By("applying the GCP OIDCShim sample")
+			cmd = exec.Command("kubectl", "apply", "-n", shimNamespace,
+				"-f", filepath.Join("config", "samples", "oidcshim_v1alpha1_oidcshim_gcp.yaml"))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply the GCP OIDCShim sample")
+
+			By("waiting for the mutating webhook to be served")
+			Eventually(verifyWebhookServing).Should(Succeed())
+		})
+
+		AfterAll(func() {
+			By("removing the workload namespace")
+			cmd := exec.Command("kubectl", "delete", "ns", shimNamespace,
+				"--ignore-not-found=true", "--wait=false")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should report the OIDCShim as Ready", func() {
+			verifyShimReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "oidcshim", shimName, "-n", shimNamespace,
+					"-o", `jsonpath={.status.conditions[?(@.type=="Ready")].status}`)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to read the OIDCShim status")
+				g.Expect(output).To(Equal("True"), "OIDCShim is not Ready yet")
+			}
+			Eventually(verifyShimReady).Should(Succeed())
+		})
+
+		It("should inject the gcp shim into an enrolled pod", func() {
+			By("creating the application pod")
+			_, err := applyPodManifest(podManifest(appPodName, shimNamespace, nil))
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the application pod")
+
+			By("reading the admitted pod back from the API server")
+			pod := getPod(appPodName, shimNamespace)
+
+			By("verifying the spiffe-helper init container and native sidecar")
+			initNames := containerNames(pod.Spec.InitContainers)
+			Expect(initNames).To(ContainElements(initContainerName, refreshContainerName))
+
+			oneShot := findContainer(pod.Spec.InitContainers, initContainerName)
+			Expect(oneShot).NotTo(BeNil())
+			Expect(oneShot.RestartPolicy).To(BeNil(), "the one-shot init container must not be a sidecar")
+
+			refresh := findContainer(pod.Spec.InitContainers, refreshContainerName)
+			Expect(refresh).NotTo(BeNil())
+			Expect(refresh.RestartPolicy).NotTo(BeNil(), "the refresh container must be a native sidecar")
+			Expect(*refresh.RestartPolicy).To(Equal(corev1.ContainerRestartPolicyAlways))
+
+			By("verifying the injected volumes")
+			Expect(volumeNames(pod.Spec.Volumes)).To(ContainElements(
+				socketVolumeName, tokenVolumeName, configVolumeName))
+
+			By("verifying the env injected into the app container")
+			app := findContainer(pod.Spec.Containers, appContainerName)
+			Expect(app).NotTo(BeNil())
+			Expect(app.Env).To(ContainElement(HaveField("Name", googleCredentialsEnv)))
+
+			By("verifying the metadata written by the webhook")
+			Expect(pod.Annotations).To(HaveKeyWithValue(statusAnnotation, statusInjected))
+			Expect(pod.Labels).To(HaveKeyWithValue(shimLabel, shimLabelValueNamespaced))
+		})
+
+		It("should not inject into a pod in a namespace excluded by the webhook", func() {
+			By("creating an enrolled pod in kube-system")
+			manifest := podManifest(negativePodName, kubeSystemNamespace, map[string]string{
+				enrollmentAnnotation: shimName,
+			})
+			_, err := applyPodManifest(manifest)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the pod in kube-system")
+			DeferCleanup(func() {
+				By("removing the kube-system pod")
+				cmd := exec.Command("kubectl", "delete", "pod", negativePodName,
+					"-n", kubeSystemNamespace, "--ignore-not-found=true", "--wait=false")
+				_, _ = utils.Run(cmd)
+			})
+
+			By("verifying the pod was admitted untouched")
+			pod := getPod(negativePodName, kubeSystemNamespace)
+			Expect(containerNames(pod.Spec.InitContainers)).NotTo(ContainElement(HavePrefix(injectedPrefix)))
+			Expect(volumeNames(pod.Spec.Volumes)).NotTo(ContainElement(HavePrefix(injectedPrefix)))
+			Expect(volumeNames(pod.Spec.Volumes)).NotTo(ContainElement(socketVolumeName))
+			Expect(pod.Annotations).NotTo(HaveKey(statusAnnotation))
+			Expect(pod.Labels).NotTo(HaveKey(shimLabel))
+		})
+
+		It("should leave a pod that opted out of injection untouched", func() {
+			By("creating an opted-out pod in the enrolled namespace")
+			manifest := podManifest(optOutPodName, shimNamespace, map[string]string{
+				injectAnnotation: "false",
+			})
+			_, err := applyPodManifest(manifest)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the opted-out pod")
+
+			By("verifying the pod was admitted untouched")
+			pod := getPod(optOutPodName, shimNamespace)
+			Expect(pod.Spec.InitContainers).To(BeEmpty())
+			Expect(volumeNames(pod.Spec.Volumes)).NotTo(ContainElement(HavePrefix(injectedPrefix)))
+			Expect(volumeNames(pod.Spec.Volumes)).NotTo(ContainElement(socketVolumeName))
+			Expect(pod.Annotations).NotTo(HaveKey(statusAnnotation))
+			Expect(pod.Labels).NotTo(HaveKey(shimLabel))
+
+			app := findContainer(pod.Spec.Containers, appContainerName)
+			Expect(app).NotTo(BeNil())
+			Expect(app.Env).NotTo(ContainElement(HaveField("Name", googleCredentialsEnv)))
+		})
 	})
 })
+
+// verifyWebhookServing asserts that the mutating webhook is actually reachable: cert-manager
+// has injected the CA bundle, the webhook Service has ready endpoints and the manager reports
+// readyz. Creating a pod before all three hold would fail on the Fail failurePolicy.
+func verifyWebhookServing(g Gomega) {
+	cmd := exec.Command("kubectl", "get", "mutatingwebhookconfiguration", webhookConfigName,
+		"-o", "jsonpath={.webhooks[0].clientConfig.caBundle}")
+	output, err := utils.Run(cmd)
+	g.Expect(err).NotTo(HaveOccurred(), "Failed to read the MutatingWebhookConfiguration")
+	g.Expect(output).NotTo(BeEmpty(), "the webhook caBundle has not been injected yet")
+
+	cmd = exec.Command("kubectl", "get", "endpoints", webhookServiceName, "-n", namespace,
+		"-o", "jsonpath={.subsets[*].addresses[*].ip}")
+	output, err = utils.Run(cmd)
+	g.Expect(err).NotTo(HaveOccurred(), "Failed to read the webhook service endpoints")
+	g.Expect(output).NotTo(BeEmpty(), "the webhook service has no ready endpoints yet")
+
+	cmd = exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+		"-n", namespace,
+		"-o", `jsonpath={.items[*].status.conditions[?(@.type=="Ready")].status}`)
+	output, err = utils.Run(cmd)
+	g.Expect(err).NotTo(HaveOccurred(), "Failed to read the controller-manager readiness")
+	g.Expect(output).To(Equal("True"), "the controller-manager is not reporting readyz yet")
+}
+
+// podManifest renders a minimal busybox pod with the given annotations.
+func podManifest(name, ns string, annotations map[string]string) string {
+	meta := ""
+	if len(annotations) > 0 {
+		keys := make([]string, 0, len(annotations))
+		for k := range annotations {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		meta = "  annotations:\n"
+		for _, k := range keys {
+			meta += fmt.Sprintf("    %q: %q\n", k, annotations[k])
+		}
+	}
+	return fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: %s
+%sspec:
+  terminationGracePeriodSeconds: 1
+  containers:
+    - name: %s
+      image: %s
+      command: ["sleep", "3600"]
+`, name, ns, meta, appContainerName, appImage)
+}
+
+// applyPodManifest pipes the rendered manifest into `kubectl apply -f -`.
+func applyPodManifest(manifest string) (string, error) {
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(manifest)
+	return utils.Run(cmd)
+}
+
+// getPod reads a pod back from the API server and decodes it into a typed corev1.Pod so the
+// specs can assert on real fields rather than on jsonpath strings.
+func getPod(name, ns string) corev1.Pod {
+	GinkgoHelper()
+	cmd := exec.Command("kubectl", "get", "pod", name, "-n", ns, "-o", "json")
+	output, err := utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed to read pod %s/%s", ns, name)
+
+	var pod corev1.Pod
+	Expect(json.Unmarshal([]byte(output), &pod)).To(Succeed(), "Failed to decode pod %s/%s", ns, name)
+	return pod
+}
+
+func containerNames(containers []corev1.Container) []string {
+	names := make([]string, 0, len(containers))
+	for _, c := range containers {
+		names = append(names, c.Name)
+	}
+	return names
+}
+
+func volumeNames(volumes []corev1.Volume) []string {
+	names := make([]string, 0, len(volumes))
+	for _, v := range volumes {
+		names = append(names, v.Name)
+	}
+	return names
+}
+
+func findContainer(containers []corev1.Container, name string) *corev1.Container {
+	for i := range containers {
+		if containers[i].Name == name {
+			return &containers[i]
+		}
+	}
+	return nil
+}
 
 // serviceAccountToken returns a token for the specified service account in the given namespace.
 // It uses the Kubernetes TokenRequest API to generate a token by directly sending a request

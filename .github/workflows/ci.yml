@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Lint and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # `make lint` downloads the GOLANGCI_LINT_VERSION pinned in the Makefile, so the
+      # linter used in CI is exactly the one used locally.
+      - name: Run linter
+        run: make lint
+
+      - name: Run unit tests
+        run: make test
+
+  e2e:
+    name: E2E tests on Kind
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The e2e suite creates and deletes its own cluster via `make setup-test-e2e` /
+      # `make cleanup-test-e2e`; this step only puts the kind binary on PATH.
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Verify kind installation
+        run: kind version
+
+      - name: Run e2e tests
+        run: make test-e2e
+        env:
+          CONTAINER_TOOL: docker
