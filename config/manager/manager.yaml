@@ -5,6 +5,9 @@ metadata:
     control-plane: controller-manager
     app.kubernetes.io/name: ztwim-oidc-shims
     app.kubernetes.io/managed-by: kustomize
+    # The webhook namespaceSelector skips namespaces carrying this label, so the operator
+    # can always be (re)started even when its own webhook endpoint is unavailable.
+    oidcshim.kemo.dev/webhook: disabled
   name: system
 ---
 apiVersion: apps/v1
@@ -21,7 +24,8 @@ spec:
     matchLabels:
       control-plane: controller-manager
       app.kubernetes.io/name: ztwim-oidc-shims
-  replicas: 1
+  # Two replicas so a rollout or a node drain never leaves the webhook endpoint empty.
+  replicas: 2
   template:
     metadata:
       annotations:
@@ -65,6 +69,13 @@ spec:
           - --health-probe-bind-address=:8081
         image: controller:latest
         name: manager
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: RELATED_IMAGE_SPIFFE_HELPER
+          value: ghcr.io/spiffe/spiffe-helper:0.10.0
         ports: []
         securityContext:
           allowPrivilegeEscalation: false
@@ -88,7 +99,7 @@ spec:
         resources:
           limits:
             cpu: 500m
-            memory: 128Mi
+            memory: 256Mi
           requests:
             cpu: 10m
             memory: 64Mi

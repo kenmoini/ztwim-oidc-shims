@@ -1,0 +1,17 @@
+# Keeps at least one webhook endpoint available during voluntary disruptions: with
+# failurePolicy=Fail an empty endpoint list would block every pod creation in the cluster.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: controller-manager
+  namespace: system
+  labels:
+    control-plane: controller-manager
+    app.kubernetes.io/name: ztwim-oidc-shims
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+      app.kubernetes.io/name: ztwim-oidc-shims

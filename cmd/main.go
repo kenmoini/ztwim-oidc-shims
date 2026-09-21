@@ -40,6 +40,7 @@ import (
 	oidcshimv1alpha1 "github.com/kenmoini/ztwim-oidc-shims/api/v1alpha1"
 	"github.com/kenmoini/ztwim-oidc-shims/internal/config"
 	"github.com/kenmoini/ztwim-oidc-shims/internal/controller"
+	podwebhook "github.com/kenmoini/ztwim-oidc-shims/internal/webhook/pod"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -231,6 +232,10 @@ func main() {
 		Reader: mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterOIDCShim")
+		os.Exit(1)
+	}
+	if err := podwebhook.SetupWithManager(mgr, opts); err != nil {
+		setupLog.Error(err, "unable to set up pod webhook")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

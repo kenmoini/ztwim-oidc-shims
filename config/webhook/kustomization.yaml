@@ -1,0 +1,14 @@
+resources:
+- manifests.yaml
+- service.yaml
+
+configurations:
+- kustomizeconfig.yaml
+
+patches:
+# Never mutate pods in the control-plane namespaces, in an OpenShift run-level 0/1 namespace,
+# or in a namespace that explicitly opts out with oidcshim.kemo.dev/webhook=disabled.
+- path: namespace_selector_patch.yaml
+  target:
+    kind: MutatingWebhookConfiguration
+    name: mutating-webhook-configuration

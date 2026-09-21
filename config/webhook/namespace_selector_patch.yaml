@@ -1,0 +1,19 @@
+- op: add
+  path: /webhooks/0/namespaceSelector
+  value:
+    matchExpressions:
+    - key: kubernetes.io/metadata.name
+      operator: NotIn
+      values:
+      - kube-system
+      - kube-public
+      - kube-node-lease
+    - key: openshift.io/run-level
+      operator: NotIn
+      values:
+      - "0"
+      - "1"
+    - key: oidcshim.kemo.dev/webhook
+      operator: NotIn
+      values:
+      - disabled
