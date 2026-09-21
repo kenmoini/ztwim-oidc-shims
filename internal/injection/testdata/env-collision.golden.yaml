@@ -1,0 +1,128 @@
+metadata:
+  annotations:
+    oidcshim.kemo.dev/file-gcp-0: '{"type":"external_account","audience":"//iam.googleapis.com/projects/482910375","subject_token_type":"urn:ietf:params:oauth:token-type:jwt","credential_source":{"file":"/var/run/secrets/oidcshim/gcp/token"}}'
+    oidcshim.kemo.dev/helper-conf-gcp: |
+      agent_address = "/spiffe-workload-api/spire-agent.sock"
+      cert_dir = "/var/run/secrets/oidcshim/gcp"
+      jwt_svids = [{jwt_audience = "//iam.googleapis.com/projects/482910375/locations/global/workloadIdentityPools/prod-pool/providers/spire", jwt_extra_audiences = ["https://payments.svc.example.com"], jwt_svid_file_name = "token"}]
+      jwt_svid_file_mode = 0644
+    oidcshim.kemo.dev/shims: OIDCShim/payments/gcp
+    oidcshim.kemo.dev/status: injected
+  creationTimestamp: null
+  labels:
+    app: checkout
+    oidcshim.kemo.dev/shim-gcp: namespaced
+  name: checkout-7f9c
+  namespace: payments
+spec:
+  containers:
+  - env:
+    - name: LOG_LEVEL
+      value: info
+    - name: GOOGLE_APPLICATION_CREDENTIALS
+      value: /legacy/creds.json
+    image: ghcr.io/example/checkout:v1.4.2
+    name: app
+    resources: {}
+    volumeMounts:
+    - mountPath: /var/lib/data
+      name: data
+    - mountPath: /var/run/secrets/oidcshim/gcp
+      name: oidcshim-token-gcp
+      readOnly: true
+    - mountPath: /etc/gcp/credential-configuration.json
+      name: oidcshim-config-gcp
+      readOnly: true
+      subPath: files/0
+  - env:
+    - name: GOOGLE_APPLICATION_CREDENTIALS
+      value: /etc/gcp/credential-configuration.json
+    image: ghcr.io/example/envoy:v1.29
+    name: sidecar
+    resources: {}
+    volumeMounts:
+    - mountPath: /var/run/secrets/oidcshim/gcp
+      name: oidcshim-token-gcp
+      readOnly: true
+    - mountPath: /etc/gcp/credential-configuration.json
+      name: oidcshim-config-gcp
+      readOnly: true
+      subPath: files/0
+  initContainers:
+  - args:
+    - -config
+    - /etc/oidcshim/helper.conf
+    - -daemon-mode=false
+    image: ghcr.io/spiffe/spiffe-helper:0.10.1
+    imagePullPolicy: IfNotPresent
+    name: oidcshim-init-gcp
+    resources: {}
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+    volumeMounts:
+    - mountPath: /spiffe-workload-api
+      name: spiffe-workload-api
+      readOnly: true
+    - mountPath: /var/run/secrets/oidcshim/gcp
+      name: oidcshim-token-gcp
+    - mountPath: /etc/oidcshim
+      name: oidcshim-config-gcp
+      readOnly: true
+  - args:
+    - -config
+    - /etc/oidcshim/helper.conf
+    image: ghcr.io/spiffe/spiffe-helper:0.10.1
+    imagePullPolicy: IfNotPresent
+    name: oidcshim-refresh-gcp
+    resources: {}
+    restartPolicy: Always
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+    volumeMounts:
+    - mountPath: /spiffe-workload-api
+      name: spiffe-workload-api
+      readOnly: true
+    - mountPath: /var/run/secrets/oidcshim/gcp
+      name: oidcshim-token-gcp
+    - mountPath: /etc/oidcshim
+      name: oidcshim-config-gcp
+      readOnly: true
+  - image: busybox:1.36
+    name: setup
+    resources: {}
+  serviceAccountName: checkout
+  volumes:
+  - emptyDir: {}
+    name: data
+  - csi:
+      driver: csi.spiffe.io
+      readOnly: true
+    name: spiffe-workload-api
+  - emptyDir:
+      medium: Memory
+    name: oidcshim-token-gcp
+  - downwardAPI:
+      items:
+      - fieldRef:
+          fieldPath: metadata.annotations['oidcshim.kemo.dev/helper-conf-gcp']
+        path: helper.conf
+      - fieldRef:
+          fieldPath: metadata.annotations['oidcshim.kemo.dev/file-gcp-0']
+        mode: 292
+        path: files/0
+    name: oidcshim-config-gcp
+status: {}
