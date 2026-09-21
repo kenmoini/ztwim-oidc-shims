@@ -1,0 +1,4 @@
+agent_address = "/spiffe-workload-api/spire-agent.sock"
+cert_dir = "/var/run/secrets/oidcshim/gcp"
+jwt_svids = [{jwt_audience = "https://iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/x", jwt_extra_audiences = ["a", "b"], jwt_svid_file_name = "token"}]
+jwt_svid_file_mode = 0644
