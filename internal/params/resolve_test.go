@@ -28,8 +28,8 @@ import (
 
 func ptr(s string) *string { return &s }
 
-func annotationParam(name, key string) v1alpha1.Parameter {
-	return v1alpha1.Parameter{Name: name, ValueFrom: v1alpha1.ParameterSource{Annotation: key}}
+func annotationParam() v1alpha1.Parameter {
+	return v1alpha1.Parameter{Name: "p", ValueFrom: v1alpha1.ParameterSource{Annotation: "k"}}
 }
 
 func labelParam(name, key string) v1alpha1.Parameter {
@@ -45,7 +45,7 @@ func TestResolveAnnotationAndLabelPrecedence(t *testing.T) {
 	}{
 		{
 			name:  "annotation pod wins over serviceaccount and namespace",
-			param: annotationParam("p", "k"),
+			param: annotationParam(),
 			lookup: Lookup{
 				Pod:            Metadata{Annotations: map[string]string{"k": "pod"}},
 				ServiceAccount: Metadata{Annotations: map[string]string{"k": "sa"}},
@@ -55,7 +55,7 @@ func TestResolveAnnotationAndLabelPrecedence(t *testing.T) {
 		},
 		{
 			name:  "annotation serviceaccount wins over namespace",
-			param: annotationParam("p", "k"),
+			param: annotationParam(),
 			lookup: Lookup{
 				ServiceAccount: Metadata{Annotations: map[string]string{"k": "sa"}},
 				Namespace:      Metadata{Annotations: map[string]string{"k": "ns"}},
@@ -64,7 +64,7 @@ func TestResolveAnnotationAndLabelPrecedence(t *testing.T) {
 		},
 		{
 			name:  "annotation falls back to namespace",
-			param: annotationParam("p", "k"),
+			param: annotationParam(),
 			lookup: Lookup{
 				Namespace: Metadata{Annotations: map[string]string{"k": "ns"}},
 			},
@@ -72,7 +72,7 @@ func TestResolveAnnotationAndLabelPrecedence(t *testing.T) {
 		},
 		{
 			name:  "annotation present but empty on pod wins over non-empty serviceaccount",
-			param: annotationParam("p", "k"),
+			param: annotationParam(),
 			lookup: Lookup{
 				Pod:            Metadata{Annotations: map[string]string{"k": ""}},
 				ServiceAccount: Metadata{Annotations: map[string]string{"k": "sa"}},
@@ -81,7 +81,7 @@ func TestResolveAnnotationAndLabelPrecedence(t *testing.T) {
 		},
 		{
 			name:  "annotation ignores labels with the same key",
-			param: annotationParam("p", "k"),
+			param: annotationParam(),
 			lookup: Lookup{
 				Pod:       Metadata{Labels: map[string]string{"k": "podlabel"}},
 				Namespace: Metadata{Annotations: map[string]string{"k": "ns"}},

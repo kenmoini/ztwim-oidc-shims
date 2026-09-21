@@ -123,10 +123,11 @@ func addVolumes(pod *corev1.Pod, plan *Plan) {
 		},
 	})
 
-	items := []corev1.DownwardAPIVolumeFile{{
+	items := make([]corev1.DownwardAPIVolumeFile, 0, 1+len(plan.Files))
+	items = append(items, corev1.DownwardAPIVolumeFile{
 		Path:     helperConfFile,
 		FieldRef: annotationFieldRef(v1alpha1.HelperConfAnnotation(plan.ShimName)),
-	}}
+	})
 	for i, f := range plan.Files {
 		// BuildPlan validates every file mode, so this parse cannot fail for a plan it produced.
 		mode, _ := parseFileMode(f.Mode)

@@ -233,7 +233,7 @@ func TestApplyMultiShim(t *testing.T) {
 		"oidcshim-init-aws", "oidcshim-refresh-aws",
 		"setup",
 	}
-	var gotInits []string
+	gotInits := make([]string, 0, len(pod.Spec.InitContainers))
 	for _, c := range pod.Spec.InitContainers {
 		gotInits = append(gotInits, c.Name)
 	}

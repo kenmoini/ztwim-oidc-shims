@@ -54,7 +54,7 @@ func ReferencedKeys(tmpl string) ([]string, error) {
 	}
 	var keys []string
 	seen := make(map[string]struct{})
-	walkNode(t.Tree.Root, func(field string) {
+	walkNode(t.Root, func(field string) {
 		if _, ok := seen[field]; ok {
 			return
 		}
