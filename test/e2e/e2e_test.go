@@ -59,12 +59,17 @@ const (
 	kubeSystemNamespace = "kube-system"
 	// shimName matches metadata.name of config/samples/oidcshim_v1alpha1_oidcshim_gcp.yaml.
 	shimName = "gcp"
+	// clusterShimName matches metadata.name of
+	// config/samples/oidcshim_v1alpha1_clusteroidcshim_azure.yaml. A cluster-scoped shim is
+	// visible from every namespace, which is what makes the kube-system negative case meaningful.
+	clusterShimName = "azure"
 
-	appPodName       = "app"
-	optOutPodName    = "app-opted-out"
-	negativePodName  = "app-not-enrolled"
-	appContainerName = "app"
-	appImage         = "busybox:1.36"
+	appPodName         = "app"
+	optOutPodName      = "app-opted-out"
+	clusterShimPodName = "app-cluster-shim"
+	negativePodName    = "app-not-enrolled"
+	appContainerName   = "app"
+	appImage           = "busybox:1.36"
 
 	// Names the webhook gives to the artifacts it injects for the "gcp" shim.
 	injectedPrefix       = "oidcshim-"
@@ -74,16 +79,23 @@ const (
 	configVolumeName     = injectedPrefix + "config-" + shimName
 	socketVolumeName     = "spiffe-workload-api"
 
+	// Names the webhook gives to the artifacts it injects for the cluster-scoped "azure" shim.
+	clusterInitContainerName = injectedPrefix + "init-" + clusterShimName
+
 	// Metadata keys, mirroring api/v1alpha1/common_types.go.
 	enrollmentAnnotation     = "oidcshim.kemo.dev/shim"
 	injectAnnotation         = "oidcshim.kemo.dev/inject"
 	statusAnnotation         = "oidcshim.kemo.dev/status"
 	statusInjected           = "injected"
 	shimLabel                = "oidcshim.kemo.dev/shim-" + shimName
+	clusterShimLabel         = "oidcshim.kemo.dev/shim-" + clusterShimName
 	shimLabelValueNamespaced = "namespaced"
+	shimLabelValueCluster    = "cluster"
 
 	// googleCredentialsEnv is the env var the GCP sample injects into app containers.
 	googleCredentialsEnv = "GOOGLE_APPLICATION_CREDENTIALS"
+	// azureClientIDEnv is one of the env vars the Azure sample injects into app containers.
+	azureClientIDEnv = "AZURE_CLIENT_ID"
 )
 
 // shimNamespaceAnnotations enrol the workload namespace into the "gcp" shim and supply the
@@ -95,6 +107,17 @@ var shimNamespaceAnnotations = []string{
 	"iam.gke.io/gcp-wid-provider=oidcshim-e2e-provider",
 	"iam.gke.io/gcp-wid-pool-location=global",
 	"iam.gke.io/gcp-service-account=oidcshim-e2e@example.iam.gserviceaccount.com",
+}
+
+// clusterShimPodAnnotations enrol a *Pod* into the cluster-scoped "azure" shim and supply the two
+// azure.workload.identity parameters config/samples/oidcshim_v1alpha1_clusteroidcshim_azure.yaml
+// requires. The exact same set is used for the positive control in oidcshim-e2e and for the
+// kube-system negative case, so the namespace the webhook namespaceSelector inspects is the only
+// difference between a pod that gets injected and one that does not.
+var clusterShimPodAnnotations = map[string]string{
+	enrollmentAnnotation:                clusterShimName,
+	"azure.workload.identity/client-id": "00000000-0000-0000-0000-00000000c11d",
+	"azure.workload.identity/tenant-id": "00000000-0000-0000-0000-0000000075e7",
 }
 
 var _ = Describe("Manager", Ordered, func() {
@@ -338,18 +361,33 @@ var _ = Describe("Manager", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply the GCP OIDCShim sample")
 
+			// A cluster-scoped shim is visible from every namespace. Without it the kube-system
+			// negative spec would prove nothing: the handler only lists namespaced OIDCShims from
+			// the pod's own namespace, so a kube-system pod could not match the gcp shim even if
+			// the webhook namespaceSelector were removed.
+			By("applying the Azure ClusterOIDCShim sample")
+			cmd = exec.Command("kubectl", "apply",
+				"-f", filepath.Join("config", "samples", "oidcshim_v1alpha1_clusteroidcshim_azure.yaml"))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply the Azure ClusterOIDCShim sample")
+
 			By("waiting for the mutating webhook to be served")
 			Eventually(verifyWebhookServing).Should(Succeed())
 		})
 
 		AfterAll(func() {
+			By("removing the Azure ClusterOIDCShim")
+			cmd := exec.Command("kubectl", "delete", "clusteroidcshim", clusterShimName,
+				"--ignore-not-found=true")
+			_, _ = utils.Run(cmd)
+
 			By("removing the workload namespace")
-			cmd := exec.Command("kubectl", "delete", "ns", shimNamespace,
+			cmd = exec.Command("kubectl", "delete", "ns", shimNamespace,
 				"--ignore-not-found=true", "--wait=false")
 			_, _ = utils.Run(cmd)
 		})
 
-		It("should report the OIDCShim as Ready", func() {
+		It("should report both shims as Ready", func() {
 			verifyShimReady := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "oidcshim", shimName, "-n", shimNamespace,
 					"-o", `jsonpath={.status.conditions[?(@.type=="Ready")].status}`)
@@ -358,6 +396,15 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(output).To(Equal("True"), "OIDCShim is not Ready yet")
 			}
 			Eventually(verifyShimReady).Should(Succeed())
+
+			verifyClusterShimReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "clusteroidcshim", clusterShimName,
+					"-o", `jsonpath={.status.conditions[?(@.type=="Ready")].status}`)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to read the ClusterOIDCShim status")
+				g.Expect(output).To(Equal("True"), "ClusterOIDCShim is not Ready yet")
+			}
+			Eventually(verifyClusterShimReady).Should(Succeed())
 		})
 
 		It("should inject the gcp shim into an enrolled pod", func() {
@@ -395,11 +442,28 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(pod.Labels).To(HaveKeyWithValue(shimLabel, shimLabelValueNamespaced))
 		})
 
+		// Positive control for the negative spec below: the exact same pod-level annotations, in a
+		// namespace the webhook does select, are injected from the cluster-scoped shim.
+		It("should inject a cluster-scoped shim enrolled at pod level", func() {
+			By("creating an azure-enrolled pod in the selected namespace")
+			manifest := podManifest(clusterShimPodName, shimNamespace, clusterShimPodAnnotations)
+			_, err := applyPodManifest(manifest)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the cluster-shim pod")
+
+			By("verifying the azure shim was injected")
+			pod := getPod(clusterShimPodName, shimNamespace)
+			Expect(containerNames(pod.Spec.InitContainers)).To(ContainElement(clusterInitContainerName))
+			Expect(pod.Annotations).To(HaveKeyWithValue(statusAnnotation, statusInjected))
+			Expect(pod.Labels).To(HaveKeyWithValue(clusterShimLabel, shimLabelValueCluster))
+
+			app := findContainer(pod.Spec.Containers, appContainerName)
+			Expect(app).NotTo(BeNil())
+			Expect(app.Env).To(ContainElement(HaveField("Name", azureClientIDEnv)))
+		})
+
 		It("should not inject into a pod in a namespace excluded by the webhook", func() {
-			By("creating an enrolled pod in kube-system")
-			manifest := podManifest(negativePodName, kubeSystemNamespace, map[string]string{
-				enrollmentAnnotation: shimName,
-			})
+			By("creating an identically annotated pod in kube-system")
+			manifest := podManifest(negativePodName, kubeSystemNamespace, clusterShimPodAnnotations)
 			_, err := applyPodManifest(manifest)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create the pod in kube-system")
 			DeferCleanup(func() {
@@ -416,6 +480,11 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(volumeNames(pod.Spec.Volumes)).NotTo(ContainElement(socketVolumeName))
 			Expect(pod.Annotations).NotTo(HaveKey(statusAnnotation))
 			Expect(pod.Labels).NotTo(HaveKey(shimLabel))
+			Expect(pod.Labels).NotTo(HaveKey(clusterShimLabel))
+
+			app := findContainer(pod.Spec.Containers, appContainerName)
+			Expect(app).NotTo(BeNil())
+			Expect(app.Env).NotTo(ContainElement(HaveField("Name", azureClientIDEnv)))
 		})
 
 		It("should leave a pod that opted out of injection untouched", func() {
