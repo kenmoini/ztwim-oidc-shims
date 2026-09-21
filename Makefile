@@ -28,8 +28,8 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 # This variable is used to construct full image tags for bundle and catalog images.
 #
 # For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
-# kemo.dev/ztwim-oidc-shims-bundle:$VERSION and kemo.dev/ztwim-oidc-shims-catalog:$VERSION.
-IMAGE_TAG_BASE ?= kemo.dev/ztwim-oidc-shims
+# quay.io/kenmoini/ztwim-oidc-shims-bundle:$VERSION and quay.io/kenmoini/ztwim-oidc-shims-catalog:$VERSION.
+IMAGE_TAG_BASE ?= quay.io/kenmoini/ztwim-oidc-shims
 
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
@@ -50,7 +50,7 @@ endif
 # This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
 OPERATOR_SDK_VERSION ?= v1.42.3
 # Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+IMG ?= $(IMAGE_TAG_BASE):$(VERSION)
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -197,6 +197,12 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
+.PHONY: build-installer-openshift
+build-installer-openshift: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment for OpenShift (service-ca, no cert-manager).
+	mkdir -p dist
+	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	$(KUSTOMIZE) build config/openshift > dist/install-openshift.yaml
+
 ##@ Deployment
 
 ifndef ignore-not-found
@@ -219,6 +225,15 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+
+.PHONY: deploy-openshift
+deploy-openshift: manifests kustomize ## Deploy controller to OpenShift using service-ca instead of cert-manager.
+	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	$(KUSTOMIZE) build config/openshift | $(KUBECTL) apply -f -
+
+.PHONY: undeploy-openshift
+undeploy-openshift: kustomize ## Undeploy the OpenShift controller deployment. Call with ignore-not-found=true to ignore resource not found errors during deletion.
+	$(KUSTOMIZE) build config/openshift | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Dependencies
 

@@ -1,0 +1,73 @@
+# OpenShift overlay: the same deployment as config/default, but with the webhook serving
+# certificate issued by the cluster's service-ca operator instead of cert-manager, and the
+# spiffe-helper image pointed at the Red Hat build shipped with the Zero Trust Workload
+# Identity Manager.
+#
+# Install with:
+#   make deploy-openshift IMG=<manager image>
+# or render it with:
+#   ./bin/kustomize build config/openshift
+#
+# Names below are the ones config/default produces: it applies the namePrefix
+# "ztwim-oidc-shims-" and the namespace "ztwim-oidc-shims-system" to every resource, so
+# patches in this overlay must target the already-prefixed names.
+
+resources:
+- ../default
+
+patches:
+# service-ca replaces cert-manager, so the self-signed Issuer and the Certificate that
+# minted the webhook serving certificate are removed from the rendered output entirely.
+- patch: |-
+    apiVersion: cert-manager.io/v1
+    kind: Issuer
+    metadata:
+      name: ztwim-oidc-shims-selfsigned-issuer
+      namespace: ztwim-oidc-shims-system
+    $patch: delete
+- patch: |-
+    apiVersion: cert-manager.io/v1
+    kind: Certificate
+    metadata:
+      name: ztwim-oidc-shims-serving-cert
+      namespace: ztwim-oidc-shims-system
+    $patch: delete
+
+# Ask service-ca to mint the serving certificate into the same Secret the manager
+# Deployment already mounts (webhook-server-cert, see config/default/manager_webhook_patch.yaml).
+- target:
+    version: v1
+    kind: Service
+    name: ztwim-oidc-shims-webhook-service
+  patch: |-
+    - op: add
+      path: /metadata/annotations
+      value:
+        service.beta.openshift.io/serving-cert-secret-name: webhook-server-cert
+
+# Swap the cert-manager CA injection annotation for the service-ca one so the API server
+# is handed the service-ca bundle as the webhook's caBundle.
+- target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: MutatingWebhookConfiguration
+    name: ztwim-oidc-shims-mutating-webhook-configuration
+  patch: |-
+    - op: remove
+      path: /metadata/annotations/cert-manager.io~1inject-ca-from
+    - op: add
+      path: /metadata/annotations/service.beta.openshift.io~1inject-cabundle
+      value: "true"
+
+# Use the Red Hat spiffe-helper image. containers/0 is "manager" and env/1 is
+# RELATED_IMAGE_SPIFFE_HELPER in config/manager/manager.yaml; verify with
+# ./bin/kustomize build config/openshift after editing manager.yaml.
+- target:
+    group: apps
+    version: v1
+    kind: Deployment
+    name: ztwim-oidc-shims-controller-manager
+  patch: |-
+    - op: replace
+      path: /spec/template/spec/containers/0/env/1/value
+      value: registry.redhat.io/zero-trust-workload-identity-manager/spiffe-helper-rhel9:1.1
