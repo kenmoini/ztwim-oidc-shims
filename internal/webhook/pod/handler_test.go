@@ -50,6 +50,14 @@ const (
 	testContainerName = "main"
 	testAudience      = "https://example.test/aud"
 	testParamName     = "project"
+
+	// operatorNamespace stands in for the namespace the manager itself runs in
+	// (config.Options.OperatorNamespace, from POD_NAMESPACE).
+	operatorNamespace = "ztwim-oidc-shims-system"
+	// prefixExcludedNamespace is excluded by the default "kube-" prefix.
+	prefixExcludedNamespace = "kube-system"
+	// podServiceAccount is the ServiceAccount newPod names.
+	podServiceAccount = "workload-sa"
 )
 
 // testScheme returns a scheme with the core and operator types registered.
@@ -70,7 +78,7 @@ func newPod(opts ...func(*corev1.Pod)) *corev1.Pod {
 			Namespace: testNamespace,
 		},
 		Spec: corev1.PodSpec{
-			ServiceAccountName: "workload-sa",
+			ServiceAccountName: podServiceAccount,
 			Containers:         []corev1.Container{{Name: testContainerName, Image: "busybox"}},
 		},
 	}
@@ -90,6 +98,26 @@ func withAnnotation(key, value string) func(*corev1.Pod) {
 	}
 }
 
+// inNamespace moves the pod into namespace.
+func inNamespace(namespace string) func(*corev1.Pod) {
+	return func(p *corev1.Pod) { p.Namespace = namespace }
+}
+
+// withoutServiceAccount clears spec.serviceAccountName, so the pod runs as "default".
+func withoutServiceAccount() func(*corev1.Pod) {
+	return func(p *corev1.Pod) { p.Spec.ServiceAccountName = "" }
+}
+
+// withGenerateName turns the pod into the shape the API server sends at CREATE for a
+// controller-owned pod: no name and no namespace yet, only a generateName prefix.
+func withGenerateName(prefix string) func(*corev1.Pod) {
+	return func(p *corev1.Pod) {
+		p.Name = ""
+		p.Namespace = ""
+		p.GenerateName = prefix
+	}
+}
+
 // namespaceObj returns a Namespace enrolling the given shim names (empty enrolls nothing).
 func namespaceObj(name string, enroll ...string) *corev1.Namespace {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
@@ -99,9 +127,55 @@ func namespaceObj(name string, enroll ...string) *corev1.Namespace {
 	return ns
 }
 
-// serviceAccountObj returns the pod's ServiceAccount.
+// serviceAccountObj returns the ServiceAccount newPod names.
 func serviceAccountObj(namespace string) *corev1.ServiceAccount {
-	return &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "workload-sa", Namespace: namespace}}
+	return serviceAccountNamed(namespace, podServiceAccount)
+}
+
+// serviceAccountNamed returns a ServiceAccount enrolling the given shim names.
+func serviceAccountNamed(namespace, name string, enroll ...string) *corev1.ServiceAccount {
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	if len(enroll) > 0 {
+		sa.Annotations = map[string]string{v1alpha1.EnrollmentKey: strings.Join(enroll, ",")}
+	}
+	return sa
+}
+
+// namespacedShim returns the OIDCShim used by the fixtures, in namespace.
+func namespacedShim(namespace string) *v1alpha1.OIDCShim {
+	return &v1alpha1.OIDCShim{
+		ObjectMeta: metav1.ObjectMeta{Name: testShim, Namespace: namespace},
+		Spec:       shimSpec(),
+	}
+}
+
+// injectableFixture seeds a cluster in which a pod of namespace IS mutated: the namespace
+// enrolls testShim and the shim lives in the same namespace. Short-circuit tests build on it
+// so that removing the short-circuit under test makes them fail.
+func injectableFixture(t *testing.T, namespace string) client.WithWatch {
+	t.Helper()
+	return fakeReader(t,
+		namespaceObj(namespace, testShim),
+		serviceAccountObj(namespace),
+		namespacedShim(namespace),
+	)
+}
+
+// assertInjected fails unless resp patched the pod with testShim's containers.
+func assertInjected(t *testing.T, resp admission.Response) {
+	t.Helper()
+	if !resp.Allowed {
+		t.Fatalf("expected allowed, got %+v", resp.Result)
+	}
+	patches := patchJSON(t, resp)
+	if !strings.Contains(patches, `"path":"/spec/initContainers"`) {
+		t.Fatalf("expected an add for /spec/initContainers, got %s", patches)
+	}
+	for _, name := range []string{"oidcshim-init-" + testShim, "oidcshim-refresh-" + testShim} {
+		if !strings.Contains(patches, name) {
+			t.Errorf("expected init container %q in the patch, got %s", name, patches)
+		}
+	}
 }
 
 // shimSpec returns a minimal valid shim spec injecting one env var.
@@ -161,63 +235,59 @@ func patchJSON(t *testing.T, resp admission.Response) string {
 
 func TestHandleShortCircuits(t *testing.T) {
 	opts := config.Defaults()
-	opts.OperatorNamespace = "ztwim-oidc-shims-system"
+	opts.OperatorNamespace = operatorNamespace
 
 	tests := []struct {
-		name      string
-		opts      config.Options
-		namespace string
-		op        admissionv1.Operation
-		pod       *corev1.Pod
+		name       string
+		namespace  string
+		op         admissionv1.Operation
+		pod        *corev1.Pod
+		wantReason string
 	}{
 		{
-			name:      "update is not mutated",
-			opts:      opts,
-			namespace: testNamespace,
-			op:        admissionv1.Update,
-			pod:       newPod(),
+			name:       "update is not mutated",
+			namespace:  testNamespace,
+			op:         admissionv1.Update,
+			pod:        newPod(),
+			wantReason: "only CREATE is mutated",
 		},
 		{
-			name:      "pod opted out",
-			opts:      opts,
-			namespace: testNamespace,
-			op:        admissionv1.Create,
-			pod:       newPod(withAnnotation(v1alpha1.InjectAnnotation, "false")),
+			name:       "pod opted out",
+			namespace:  testNamespace,
+			op:         admissionv1.Create,
+			pod:        newPod(withAnnotation(v1alpha1.InjectAnnotation, "false")),
+			wantReason: "opted out",
 		},
 		{
-			name:      "pod already injected",
-			opts:      opts,
-			namespace: testNamespace,
-			op:        admissionv1.Create,
-			pod:       newPod(withAnnotation(v1alpha1.StatusAnnotation, v1alpha1.StatusInjected)),
+			name:       "pod already injected",
+			namespace:  testNamespace,
+			op:         admissionv1.Create,
+			pod:        newPod(withAnnotation(v1alpha1.StatusAnnotation, v1alpha1.StatusInjected)),
+			wantReason: "already injected",
 		},
 		{
-			name:      "namespace excluded by prefix",
-			opts:      opts,
-			namespace: "kube-system",
-			op:        admissionv1.Create,
-			pod:       newPod(),
+			name:       "namespace excluded by prefix",
+			namespace:  prefixExcludedNamespace,
+			op:         admissionv1.Create,
+			pod:        newPod(inNamespace(prefixExcludedNamespace)),
+			wantReason: "namespace excluded",
 		},
 		{
-			name:      "namespace excluded by operator namespace",
-			opts:      opts,
-			namespace: "ztwim-oidc-shims-system",
-			op:        admissionv1.Create,
-			pod:       newPod(),
-		},
-		{
-			name:      "no shims in the cluster",
-			opts:      opts,
-			namespace: testNamespace,
-			op:        admissionv1.Create,
-			pod:       newPod(),
+			name:       "namespace excluded by operator namespace",
+			namespace:  operatorNamespace,
+			op:         admissionv1.Create,
+			pod:        newPod(inNamespace(operatorNamespace)),
+			wantReason: "namespace excluded",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			reader := fakeReader(t, namespaceObj(tc.namespace), serviceAccountObj(tc.namespace))
-			h := newHandler(t, reader, reader, tc.opts)
+			// injectableFixture is a cluster in which this pod WOULD be mutated, so a subtest
+			// only passes because its short-circuit fired - not because nothing matched. The
+			// reason string pins down which short-circuit that was.
+			reader := injectableFixture(t, tc.namespace)
+			h := newHandler(t, reader, reader, opts)
 
 			resp := h.Handle(context.Background(), newRequest(t, tc.op, tc.namespace, tc.pod))
 
@@ -227,20 +297,41 @@ func TestHandleShortCircuits(t *testing.T) {
 			if len(resp.Patches) != 0 {
 				t.Fatalf("expected no patches, got %s", patchJSON(t, resp))
 			}
+			if resp.Result == nil {
+				t.Fatalf("expected a result carrying reason %q, got none", tc.wantReason)
+			}
+			if resp.Result.Message != tc.wantReason {
+				t.Errorf("expected reason %q, got %q", tc.wantReason, resp.Result.Message)
+			}
 		})
 	}
 }
 
-func TestHandleAppliesNamespacedShim(t *testing.T) {
-	shim := &v1alpha1.OIDCShim{
-		ObjectMeta: metav1.ObjectMeta{Name: testShim, Namespace: testNamespace},
-		Spec:       shimSpec(),
+// TestHandleShortCircuitFixturesAreMutableControls guards TestHandleShortCircuits: it proves
+// that every fixture it uses really is one the webhook mutates once the short-circuit no longer
+// applies, so those subtests cannot pass vacuously.
+func TestHandleShortCircuitFixturesAreMutableControls(t *testing.T) {
+	// Without any exclusion configured, the excluded-namespace fixtures are mutated too.
+	permissive := config.Defaults()
+	permissive.ExcludedNamespacePrefixes = nil
+	permissive.ZTWIMNamespace = ""
+	permissive.OperatorNamespace = ""
+
+	for _, namespace := range []string{testNamespace, prefixExcludedNamespace, operatorNamespace} {
+		t.Run(namespace, func(t *testing.T) {
+			reader := injectableFixture(t, namespace)
+			h := newHandler(t, reader, reader, permissive)
+
+			resp := h.Handle(context.Background(),
+				newRequest(t, admissionv1.Create, namespace, newPod(inNamespace(namespace))))
+
+			assertInjected(t, resp)
+		})
 	}
-	reader := fakeReader(t,
-		namespaceObj(testNamespace, testShim),
-		serviceAccountObj(testNamespace),
-		shim,
-	)
+}
+
+func TestHandleAllowsWhenNoShimExists(t *testing.T) {
+	reader := fakeReader(t, namespaceObj(testNamespace), serviceAccountObj(testNamespace))
 	h := newHandler(t, reader, reader, config.Defaults())
 
 	resp := h.Handle(context.Background(), newRequest(t, admissionv1.Create, testNamespace, newPod()))
@@ -248,15 +339,55 @@ func TestHandleAppliesNamespacedShim(t *testing.T) {
 	if !resp.Allowed {
 		t.Fatalf("expected allowed, got %+v", resp.Result)
 	}
+	if len(resp.Patches) != 0 {
+		t.Fatalf("expected no patches, got %s", patchJSON(t, resp))
+	}
+	if resp.Result == nil || resp.Result.Message != "no shim applied" {
+		t.Fatalf("expected reason %q, got %+v", "no shim applied", resp.Result)
+	}
+}
+
+func TestHandleFallsBackToTheDefaultServiceAccount(t *testing.T) {
+	// The enrollment lives ONLY on the ServiceAccount named "default" and the pod names no
+	// ServiceAccount, so the pod is mutated only if the handler looked "default" up.
+	reader := fakeReader(t,
+		namespaceObj(testNamespace),
+		serviceAccountNamed(testNamespace, defaultServiceAccountName, testShim),
+		namespacedShim(testNamespace),
+	)
+	h := newHandler(t, reader, reader, config.Defaults())
+
+	resp := h.Handle(context.Background(),
+		newRequest(t, admissionv1.Create, testNamespace, newPod(withoutServiceAccount())))
+
+	assertInjected(t, resp)
+}
+
+func TestHandleInjectsPodWithGenerateNameOnly(t *testing.T) {
+	// At CREATE a controller-owned pod carries neither a name nor a namespace: the namespace
+	// comes from the admission request alone.
+	reader := injectableFixture(t, testNamespace)
+	h := newHandler(t, reader, reader, config.Defaults())
+
+	pod := newPod(withGenerateName("workload-"))
+	if pod.Name != "" || pod.Namespace != "" {
+		t.Fatalf("fixture must have neither name nor namespace, got %q/%q", pod.Namespace, pod.Name)
+	}
+
+	resp := h.Handle(context.Background(), newRequest(t, admissionv1.Create, testNamespace, pod))
+
+	assertInjected(t, resp)
+}
+
+func TestHandleAppliesNamespacedShim(t *testing.T) {
+	reader := injectableFixture(t, testNamespace)
+	h := newHandler(t, reader, reader, config.Defaults())
+
+	resp := h.Handle(context.Background(), newRequest(t, admissionv1.Create, testNamespace, newPod()))
+
+	assertInjected(t, resp)
+
 	patches := patchJSON(t, resp)
-	if !strings.Contains(patches, `"path":"/spec/initContainers"`) {
-		t.Errorf("expected an add for /spec/initContainers, got %s", patches)
-	}
-	for _, name := range []string{"oidcshim-init-" + testShim, "oidcshim-refresh-" + testShim} {
-		if !strings.Contains(patches, name) {
-			t.Errorf("expected init container %q in the patch, got %s", name, patches)
-		}
-	}
 	if !strings.Contains(patches, v1alpha1.StatusAnnotation) || !strings.Contains(patches, v1alpha1.StatusInjected) {
 		t.Errorf("expected the status annotation in the patch, got %s", patches)
 	}
