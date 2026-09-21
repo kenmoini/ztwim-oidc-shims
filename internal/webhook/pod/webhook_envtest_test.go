@@ -42,8 +42,11 @@ const (
 	projectNumberAnnotation = "iam.gke.io/gcp-project-number"
 	projectNumber           = "123"
 
-	tokenDir    = "/var/run/secrets/oidcshim/" + gcpShim
-	keyFilePath = tokenDir + "/key.json"
+	tokenDir = "/var/run/secrets/oidcshim/" + gcpShim
+	// keyFilePath deliberately sits outside tokenDir: app containers mount the token
+	// directory read-only, so a file under it could never be created. It mirrors
+	// config/samples/oidcshim_v1alpha1_oidcshim_gcp.yaml.
+	keyFilePath = "/etc/oidcshim/" + gcpShim + "/key.json"
 
 	socketVolume      = "spiffe-workload-api"
 	gcpTokenVolume    = "oidcshim-token-" + gcpShim
@@ -262,7 +265,7 @@ func gcpShimSpec() v1alpha1.OIDCShimSpec {
 		},
 		Audience: "{{ .audience }}",
 		Inject: v1alpha1.InjectSpec{
-			Env: []v1alpha1.EnvVar{{Name: googleCredsEnv, Value: "{{ .tokenDir }}/key.json"}},
+			Env: []v1alpha1.EnvVar{{Name: googleCredsEnv, Value: keyFilePath}},
 			Files: []v1alpha1.FileSpec{{
 				Path:    keyFilePath,
 				Content: `{"type":"external_account","audience":"{{ .audience }}","token_file":"{{ .tokenPath }}"}`,

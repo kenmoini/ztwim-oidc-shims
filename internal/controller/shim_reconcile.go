@@ -20,7 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -41,6 +41,10 @@ import (
 // requeueInterval is how often matchedPods is refreshed.
 const requeueInterval = 5 * time.Minute
 
+// podListPageSize bounds a single page of the matchedPods count, so a cluster-wide
+// ClusterOIDCShim never asks the API server for every pod in one response.
+const podListPageSize = 500
+
 const (
 	// validationAudience stands in for the templated audience while validating the
 	// helper config: the real one is only known once a pod is admitted.
@@ -50,10 +54,13 @@ const (
 	validationAgentAddress = "/spiffe-workload-api/spire-agent.sock"
 	// defaultFileMode is the mode of an inject.files entry that leaves it unset.
 	defaultFileMode = "0644"
+	// maxShimNameLength is the longest metadata.name a shim may carry. The longest derived
+	// name is the refresh container's, "oidcshim-refresh-<name>", and a container name is
+	// limited to 63 characters: 63 - len("oidcshim-refresh-") = 46. The CRDs carry the same
+	// cap as a CEL rule; this check repeats it so an object created before the rule existed
+	// is still reported as InvalidSpec.
+	maxShimNameLength = 46
 )
-
-// fileModePattern is the octal mode accepted for an injected file.
-var fileModePattern = regexp.MustCompile(`^0?[0-7]{3}$`)
 
 // reconcileShim validates shim, reports the outcome through the Ready condition and
 // observedGeneration, counts the pods currently carrying the shim's label, and writes
@@ -99,37 +106,75 @@ func reconcileShim(ctx context.Context, c client.Client, reader client.Reader, s
 
 // countMatchedPods counts the pods carrying the shim's label: cluster-wide for a
 // ClusterOIDCShim, in the shim's own namespace for an OIDCShim.
+//
+// The list is uncached (the operator holds no pod informer), so it is paged at
+// podListPageSize and the first page is served from the API server's watch cache
+// (resourceVersion "0") rather than from etcd. A slightly stale count is fine: it is a
+// status convenience, refreshed every requeueInterval. Continuation pages must not carry
+// a resourceVersion, so it is only set on the first request.
 func countMatchedPods(ctx context.Context, reader client.Reader, shim v1alpha1.Shim) (int32, error) {
 	labelValue := v1alpha1.ShimLabelValueNamespaced
 	if shim.IsClusterScoped() {
 		labelValue = v1alpha1.ShimLabelValueCluster
 	}
 
-	options := []client.ListOption{
+	base := []client.ListOption{
 		client.MatchingLabels{v1alpha1.ShimLabelKey(shim.GetName()): labelValue},
+		client.Limit(podListPageSize),
 	}
 	if !shim.IsClusterScoped() {
-		options = append(options, client.InNamespace(shim.GetNamespace()))
+		base = append(base, client.InNamespace(shim.GetNamespace()))
 	}
 
-	pods := &corev1.PodList{}
-	if err := reader.List(ctx, pods, options...); err != nil {
-		return 0, fmt.Errorf("listing pods of %s: %w", shim.ShimKey(), err)
+	count := 0
+	continueToken := ""
+	for {
+		options := make([]client.ListOption, len(base), len(base)+1)
+		copy(options, base)
+		if continueToken == "" {
+			options = append(options, &client.ListOptions{
+				Raw: &metav1.ListOptions{ResourceVersion: "0"},
+			})
+		} else {
+			options = append(options, client.Continue(continueToken))
+		}
+
+		pods := &corev1.PodList{}
+		if err := reader.List(ctx, pods, options...); err != nil {
+			return 0, fmt.Errorf("listing pods of %s: %w", shim.ShimKey(), err)
+		}
+		count += len(pods.Items)
+
+		continueToken = pods.Continue
+		if continueToken == "" {
+			return int32(count), nil
+		}
 	}
-	return int32(len(pods.Items)), nil
 }
 
 // validateShim performs every static check the webhook would otherwise fail at admission
 // time and returns a single error joining all problems found, or nil.
 func validateShim(spec *v1alpha1.OIDCShimSpec, shimName string) error {
 	return errors.Join(
+		validateName(shimName),
 		params.Validate(spec.Parameters),
 		selection.Validate(spec.Selection),
 		validateToken(shimName, spec.Token),
 		validateHelper(spec.Helper),
 		errors.Join(validateTemplates(spec)...),
-		errors.Join(validateFiles(spec.Inject.Files)...),
+		errors.Join(validateFiles(spec.Inject.Files, injection.ResolveToken(shimName, spec.Token).MountPath)...),
 	)
+}
+
+// validateName rejects a name too long to be embedded in the derived container and
+// volume names.
+func validateName(shimName string) error {
+	if len(shimName) > maxShimNameLength {
+		return fmt.Errorf(
+			"metadata.name: %q is %d characters, at most %d are allowed (it is embedded in container and volume names)",
+			shimName, len(shimName), maxShimNameLength)
+	}
+	return nil
 }
 
 // validateTemplates checks that every templated field parses and references only the
@@ -193,10 +238,16 @@ func validateToken(shimName string, token v1alpha1.TokenSpec) error {
 	return nil
 }
 
-// validateFiles checks that every injected file has a valid mode and a unique path.
-func validateFiles(files []v1alpha1.FileSpec) []error {
+// validateFiles checks that every injected file has a valid mode, a unique path, and a
+// path that is neither the token mountPath nor under it — app containers mount that
+// directory read-only, so a file inside it could never be created.
+//
+// These are the same rules BuildPlan in internal/injection/plan.go enforces at admission
+// time; the two must stay in sync. This copy exists so a shim that would be skipped for
+// every pod is reported as InvalidSpec on its Ready condition instead.
+func validateFiles(files []v1alpha1.FileSpec, tokenMountPath string) []error {
 	var problems []error
-	seen := make(map[string]struct{}, len(files))
+	seen := map[string]struct{}{tokenMountPath: {}}
 	for i := range files {
 		file := &files[i]
 
@@ -204,13 +255,23 @@ func validateFiles(files []v1alpha1.FileSpec) []error {
 		if mode == "" {
 			mode = defaultFileMode
 		}
-		if !fileModePattern.MatchString(mode) {
+		if !spiffehelper.ModePattern.MatchString(mode) {
 			problems = append(problems,
 				fmt.Errorf("spec.inject.files[%s]: mode %q is not a valid octal mode", file.Path, mode))
 		}
 
 		if _, ok := seen[file.Path]; ok {
-			problems = append(problems, fmt.Errorf("spec.inject.files[%s]: duplicate path", file.Path))
+			if file.Path == tokenMountPath {
+				problems = append(problems, fmt.Errorf(
+					"spec.inject.files[%s]: path collides with the token mountPath %q", file.Path, tokenMountPath))
+			} else {
+				problems = append(problems, fmt.Errorf("spec.inject.files[%s]: duplicate path", file.Path))
+			}
+		}
+		if strings.HasPrefix(file.Path, tokenMountPath+"/") {
+			problems = append(problems, fmt.Errorf(
+				"spec.inject.files[%s]: path is under the token mountPath %q, which is mounted read-only",
+				file.Path, tokenMountPath))
 		}
 		seen[file.Path] = struct{}{}
 	}

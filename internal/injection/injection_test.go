@@ -747,6 +747,77 @@ func TestBuildPlanDuplicateFilePaths(t *testing.T) {
 	}
 }
 
+func TestBuildPlanFilePathUnderTokenMountPath(t *testing.T) {
+	// The GCP sample used to render key.json here: app containers mount the token
+	// directory read-only, so the file could never be created at container start.
+	shim := gcpShim()
+	shim.Spec.Inject.Files[0].Path = "/var/run/secrets/oidcshim/gcp/key.json"
+
+	pod := basePod()
+	tok := ResolveToken("gcp", shim.Spec.Token)
+	_, err := BuildPlan(shim, valuesFor(shim, pod, tok, gcpParams()), tok, testDefaults())
+	if err == nil {
+		t.Fatal("BuildPlan() error = nil, want a read-only token mountPath error")
+	}
+	for _, want := range []string{"/var/run/secrets/oidcshim/gcp/key.json", "/var/run/secrets/oidcshim/gcp"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name %q", err, want)
+		}
+	}
+
+	// A sibling directory sharing the mountPath as a string prefix is fine.
+	shim.Spec.Inject.Files[0].Path = "/var/run/secrets/oidcshim/gcp-extra/key.json"
+	if _, err := BuildPlan(shim, valuesFor(shim, pod, tok, gcpParams()), tok, testDefaults()); err != nil {
+		t.Errorf("BuildPlan() error = %v, want a sibling path to be accepted", err)
+	}
+}
+
+func TestApplyPodAnnotationBudget(t *testing.T) {
+	// Two shims whose rendered content each fit under the per-shim cap but together
+	// exceed the pod-wide annotation budget: the first applies, the second is skipped.
+	big := strings.Repeat("x", (MaxPodAnnotationBytes/2)+1024)
+
+	gcp := gcpShim()
+	gcp.Spec.Inject.Files[0].Content = big
+	aws := awsShim()
+	aws.Spec.Inject.Files = []v1alpha1.FileSpec{{Path: "/etc/aws/creds", Content: big}}
+
+	pod := basePod()
+	gcpPlan := planFor(t, gcp, pod, gcpParams(), testDefaults())
+	awsPlan := planFor(t, aws, pod, awsParams(), testDefaults())
+
+	applied, warnings := Apply(pod, []*Plan{gcpPlan, awsPlan})
+
+	if len(applied) != 1 || applied[0].ShimName != "gcp" {
+		t.Fatalf("applied = %v, want only the gcp plan", applied)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want exactly one", warnings)
+	}
+	if !strings.Contains(warnings[0], "ClusterOIDCShim/aws") ||
+		!strings.Contains(warnings[0], "pod annotation budget") {
+		t.Errorf("warning = %q, want it to name the skipped shim and the budget", warnings[0])
+	}
+	if _, ok := pod.Annotations[v1alpha1.HelperConfAnnotation("aws")]; ok {
+		t.Error("the skipped plan still wrote its helper config annotation")
+	}
+	if got := pod.Annotations[v1alpha1.ShimsAnnotation]; got != "OIDCShim/payments/gcp" {
+		t.Errorf("shims annotation = %q, want only the applied shim", got)
+	}
+
+	// Annotations the pod already carries count against the same budget.
+	crowded := basePod()
+	crowded.Annotations = map[string]string{"pre-existing": strings.Repeat("y", MaxPodAnnotationBytes)}
+	onlyPlan := planFor(t, gcpShim(), crowded, gcpParams(), testDefaults())
+	applied, warnings = Apply(crowded, []*Plan{onlyPlan})
+	if len(applied) != 0 {
+		t.Errorf("applied = %v, want none: the pod's own annotations already fill the budget", applied)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "pod annotation budget") {
+		t.Errorf("warnings = %v, want one budget warning", warnings)
+	}
+}
+
 func TestBuildPlanFilePathCollidesWithTokenMountPath(t *testing.T) {
 	shim := gcpShim()
 	shim.Spec.Inject.Files[0].Path = "/var/run/secrets/oidcshim/gcp"

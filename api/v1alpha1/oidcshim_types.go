@@ -26,7 +26,7 @@ import (
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Pods",type=integer,JSONPath=`.status.matchedPods`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 58",message="metadata.name must be at most 58 characters"
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 46",message="metadata.name must be at most 46 characters (it is embedded in container and volume names)"
 
 // OIDCShim injects SPIFFE JWT-SVID based OIDC federation into pods of its own namespace.
 type OIDCShim struct {

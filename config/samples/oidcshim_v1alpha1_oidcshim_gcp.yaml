@@ -53,9 +53,11 @@ spec:
   inject:
     env:
       - name: GOOGLE_APPLICATION_CREDENTIALS
-        value: "{{ .tokenDir }}/key.json"
+        value: /etc/oidcshim/gcp/key.json
     files:
-      - path: /var/run/secrets/oidcshim/gcp/key.json
+      # Deliberately NOT under the token mountPath: app containers mount that directory
+      # read-only, so the runtime could not create key.json inside it.
+      - path: /etc/oidcshim/gcp/key.json
         content: |
           {
             "universe_domain": "googleapis.com",

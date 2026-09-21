@@ -92,8 +92,11 @@ const (
 	shimLabelValueNamespaced = "namespaced"
 	shimLabelValueCluster    = "cluster"
 
-	// googleCredentialsEnv is the env var the GCP sample injects into app containers.
-	googleCredentialsEnv = "GOOGLE_APPLICATION_CREDENTIALS"
+	// googleCredentialsEnv is the env var the GCP sample injects into app containers, and
+	// googleCredentialsPath is the value it carries: the rendered external_account file,
+	// which sits outside the read-only token mountPath.
+	googleCredentialsEnv  = "GOOGLE_APPLICATION_CREDENTIALS"
+	googleCredentialsPath = "/etc/oidcshim/" + shimName + "/key.json"
 	// azureClientIDEnv is one of the env vars the Azure sample injects into app containers.
 	azureClientIDEnv = "AZURE_CLIENT_ID"
 )
@@ -435,7 +438,15 @@ var _ = Describe("Manager", Ordered, func() {
 			By("verifying the env injected into the app container")
 			app := findContainer(pod.Spec.Containers, appContainerName)
 			Expect(app).NotTo(BeNil())
-			Expect(app.Env).To(ContainElement(HaveField("Name", googleCredentialsEnv)))
+			Expect(app.Env).To(ContainElement(corev1.EnvVar{
+				Name: googleCredentialsEnv, Value: googleCredentialsPath}))
+
+			By("verifying the rendered credential file is mounted outside the read-only token dir")
+			Expect(app.VolumeMounts).To(ContainElement(SatisfyAll(
+				HaveField("Name", configVolumeName),
+				HaveField("MountPath", googleCredentialsPath),
+				HaveField("ReadOnly", BeTrue()),
+			)))
 
 			By("verifying the metadata written by the webhook")
 			Expect(pod.Annotations).To(HaveKeyWithValue(statusAnnotation, statusInjected))

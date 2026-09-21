@@ -93,6 +93,44 @@ func TestRender_QuoteEscaping(t *testing.T) {
 	}
 }
 
+func TestRender_ModeNormalisation(t *testing.T) {
+	// jwt_svid_file_mode is emitted unquoted, so HCL reads a leading-zero-less "644" as
+	// the decimal 644 (0o1204). Render must normalise it.
+	tests := []struct {
+		mode string
+		want string
+	}{
+		{"644", "jwt_svid_file_mode = 0644\n"},
+		{"0644", "jwt_svid_file_mode = 0644\n"},
+		{"400", "jwt_svid_file_mode = 0400\n"},
+		{"0400", "jwt_svid_file_mode = 0400\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.mode, func(t *testing.T) {
+			cfg := minimalConfig()
+			cfg.JWTSVIDFileMode = tt.mode
+
+			got, err := Render(cfg)
+			if err != nil {
+				t.Fatalf("Render() returned unexpected error: %v", err)
+			}
+			if !strings.HasSuffix(got, tt.want) {
+				t.Errorf("Render() = %q, want it to end with %q", got, tt.want)
+			}
+		})
+	}
+
+	// Render must not mutate the caller's Config.
+	cfg := minimalConfig()
+	cfg.JWTSVIDFileMode = "644"
+	if _, err := Render(cfg); err != nil {
+		t.Fatalf("Render() returned unexpected error: %v", err)
+	}
+	if cfg.JWTSVIDFileMode != "644" {
+		t.Errorf("Render() mutated the caller's Config: JWTSVIDFileMode = %q", cfg.JWTSVIDFileMode)
+	}
+}
+
 func TestRender_Errors(t *testing.T) {
 	tests := []struct {
 		name string

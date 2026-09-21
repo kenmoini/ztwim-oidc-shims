@@ -58,7 +58,22 @@ func Apply(pod *corev1.Pod, plans []*Plan) (applied []*Plan, warnings []string) 
 
 	var newInits []corev1.Container
 
+	// The rendered content lives in the pod's own annotations, and the API server rejects
+	// an object whose annotations exceed 256 KiB in total. The per-shim cap
+	// (Defaults.MaxRenderedBytes) cannot see the other shims applied to the same pod, so
+	// the pod-wide budget is enforced here.
+	existingBytes := annotationBytes(pod)
+	addedBytes := 0
+
 	for _, plan := range plans {
+		planBytes := plan.renderedBytes()
+		if total := existingBytes + addedBytes + planBytes; total > MaxPodAnnotationBytes {
+			warnings = append(warnings, fmt.Sprintf(
+				"shim %s skipped: rendered content would exceed the pod annotation budget (%d > %d bytes)",
+				plan.ShimKey, total, MaxPodAnnotationBytes))
+			continue
+		}
+
 		targets, requested, targetWarnings := resolveTargets(pod, plan)
 		warnings = append(warnings, targetWarnings...)
 
@@ -78,6 +93,7 @@ func Apply(pod *corev1.Pod, plans []*Plan) (applied []*Plan, warnings []string) 
 		warnings = append(warnings, injectIntoContainers(pod, plan, targets)...)
 		writePlanMetadata(pod, plan)
 
+		addedBytes += planBytes
 		applied = append(applied, plan)
 	}
 
@@ -95,6 +111,16 @@ func Apply(pod *corev1.Pod, plans []*Plan) (applied []*Plan, warnings []string) 
 	setAnnotation(pod, v1alpha1.ShimsAnnotation, strings.Join(keys, ","))
 
 	return applied, warnings
+}
+
+// annotationBytes is the total size of pod's annotations, keys included, the way the
+// API server accounts for them.
+func annotationBytes(pod *corev1.Pod) int {
+	total := 0
+	for k, v := range pod.Annotations {
+		total += len(k) + len(v)
+	}
+	return total
 }
 
 func skipped(plan *Plan, reason string) string {

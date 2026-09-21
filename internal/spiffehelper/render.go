@@ -31,8 +31,10 @@ type Config struct {
 	JWTSVIDFileMode string
 }
 
-// modePattern matches an optional leading "0" followed by exactly three octal digits.
-var modePattern = regexp.MustCompile(`^0?[0-7]{3}$`)
+// ModePattern matches an optional leading "0" followed by exactly three octal digits.
+// It is the one definition of an acceptable octal file mode; internal/controller reuses
+// it so the CRD-level validation and the rendered config agree.
+var ModePattern = regexp.MustCompile(`^0?[0-7]{3}$`)
 
 const configTemplate = `agent_address = {{quote .AgentAddress}}
 cert_dir = {{quote .CertDir}}
@@ -56,6 +58,8 @@ type templateData struct {
 // Render returns the spiffe-helper config file contents for c.
 // It returns an error when AgentAddress, CertDir, JWTAudience or JWTSVIDFileName is empty,
 // or when JWTSVIDFileMode is set but is not an octal mode matching ^0?[0-7]{3}$.
+// A three-digit mode without a leading zero (e.g. "644") is normalised to "0644", because
+// HCL would otherwise read the emitted value as a decimal number.
 func Render(c Config) (string, error) {
 	if c.AgentAddress == "" {
 		return "", fmt.Errorf("spiffehelper: AgentAddress must not be empty")
@@ -69,13 +73,19 @@ func Render(c Config) (string, error) {
 	if c.JWTSVIDFileName == "" {
 		return "", fmt.Errorf("spiffehelper: JWTSVIDFileName must not be empty")
 	}
-	if c.JWTSVIDFileMode != "" && !modePattern.MatchString(c.JWTSVIDFileMode) {
+	if c.JWTSVIDFileMode != "" && !ModePattern.MatchString(c.JWTSVIDFileMode) {
 		return "", fmt.Errorf("spiffehelper: JWTSVIDFileMode %q is not a valid octal mode", c.JWTSVIDFileMode)
 	}
 
 	quotedExtras := make([]string, len(c.JWTExtraAudiences))
 	for i, a := range c.JWTExtraAudiences {
 		quotedExtras[i] = strconv.Quote(a)
+	}
+
+	// jwt_svid_file_mode is emitted unquoted, and HCL reads a number without a leading
+	// zero as decimal: "644" would become 0o1204. Normalise to the octal literal.
+	if c.JWTSVIDFileMode != "" && !strings.HasPrefix(c.JWTSVIDFileMode, "0") {
+		c.JWTSVIDFileMode = "0" + c.JWTSVIDFileMode
 	}
 
 	data := templateData{

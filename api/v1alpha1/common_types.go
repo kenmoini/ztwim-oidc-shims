@@ -190,11 +190,13 @@ type ParameterSource struct {
 
 	// Annotation is looked up on the Pod, then its ServiceAccount, then its Namespace.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=317
 	Annotation string `json:"annotation,omitempty"`
 
 	// Label is looked up on the Pod, then its ServiceAccount, then its Namespace.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=317
 	Label string `json:"label,omitempty"`
 
@@ -205,6 +207,7 @@ type ParameterSource struct {
 
 	// Template is a Go text/template rendered over previously resolved parameters.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=4096
 	Template string `json:"template,omitempty"`
 }

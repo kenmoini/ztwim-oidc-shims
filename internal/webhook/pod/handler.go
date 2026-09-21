@@ -51,6 +51,13 @@ const defaultServiceAccountName = "default"
 
 // Handler mutates pods at CREATE according to the OIDCShim/ClusterOIDCShim resources that match them.
 type Handler struct {
+	// Reader is the manager's cached client. Reading Namespaces, ServiceAccounts and shims
+	// from informers keeps admission off the API server's critical path, at the cost of
+	// cache lag: a pod created within a few hundred milliseconds of annotating its
+	// Namespace/ServiceAccount or creating a shim may be admitted against stale data and
+	// miss injection. Nothing retro-injects it — the pod has to be recreated. The
+	// alternative, an uncached read per pod CREATE, would put the API server in the path of
+	// every pod in the cluster behind failurePolicy: Fail, which is the worse trade.
 	Reader    client.Reader // cached: Namespace, ServiceAccount, OIDCShim, ClusterOIDCShim
 	APIReader client.Reader // uncached: ConfigMaps (no cluster-wide ConfigMap informer)
 	Decoder   admission.Decoder

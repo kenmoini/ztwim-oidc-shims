@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"path"
 	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 
@@ -114,6 +115,12 @@ type RenderedFile struct {
 	Mode    string // octal string, e.g. "0644"
 }
 
+// MaxPodAnnotationBytes caps the rendered content Apply is willing to write into a
+// single pod's annotations. The API server refuses an object whose annotations exceed
+// 256 KiB in total; 192 KiB leaves headroom for the pod's own annotations (and for the
+// annotation keys this package adds).
+const MaxPodAnnotationBytes = 192 * 1024
+
 // Plan is everything Apply needs for one shim, fully rendered.
 type Plan struct {
 	ShimName      string
@@ -132,6 +139,16 @@ type Plan struct {
 	HelperImagePullPolicy corev1.PullPolicy
 	HelperResources       *corev1.ResourceRequirements
 	HelperSecurityContext *corev1.SecurityContext
+}
+
+// renderedBytes is the annotation payload this plan writes onto a pod: the helper
+// config plus the content of every rendered file.
+func (p *Plan) renderedBytes() int {
+	total := len(p.HelperConf)
+	for _, f := range p.Files {
+		total += len(f.Content)
+	}
+	return total
 }
 
 // BuildPlan renders shim's audience, extraAudiences, env values and file contents over
@@ -203,6 +220,10 @@ func BuildPlan(shim v1alpha1.Shim, values params.Values, tok Token, d Defaults) 
 	// Every mountPath a targeted container receives must be unique: the API server rejects a
 	// container carrying two volumeMounts at the same mountPath, so a shim that would produce
 	// one is refused here rather than breaking admission for every matching pod.
+	//
+	// The same rules are enforced statically by validateFiles in
+	// internal/controller/shim_reconcile.go, which reports them on the shim's Ready
+	// condition; the two must stay in sync.
 	seenPaths := map[string]struct{}{tok.MountPath: {}}
 	for i, f := range spec.Inject.Files {
 		content, err := params.Render("file", f.Content, values)
@@ -216,6 +237,13 @@ func BuildPlan(shim v1alpha1.Shim, values params.Values, tok Token, d Defaults) 
 			}
 			return nil, fmt.Errorf("injection: shim %q: inject.files[%d] path %q is already used by an earlier file",
 				name, i, f.Path)
+		}
+		// A file under the token mountPath cannot be materialised: app containers mount that
+		// directory read-only, so the runtime would fail to create the file inside it.
+		if strings.HasPrefix(f.Path, tok.MountPath+"/") {
+			return nil, fmt.Errorf(
+				"injection: shim %q: inject.files[%d] path %q is under the token mountPath %q, which is mounted read-only",
+				name, i, f.Path, tok.MountPath)
 		}
 		seenPaths[f.Path] = struct{}{}
 		mode := f.Mode

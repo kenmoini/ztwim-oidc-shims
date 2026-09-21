@@ -422,6 +422,7 @@ spec:
                           description: Annotation is looked up on the Pod, then its
                             ServiceAccount, then its Namespace.
                           maxLength: 317
+                          minLength: 1
                           type: string
                         configMapKeyRef:
                           description: |-
@@ -442,6 +443,7 @@ spec:
                           description: Label is looked up on the Pod, then its ServiceAccount,
                             then its Namespace.
                           maxLength: 317
+                          minLength: 1
                           type: string
                         static:
                           description: Static is a literal value.
@@ -451,6 +453,7 @@ spec:
                           description: Template is a Go text/template rendered over
                             previously resolved parameters.
                           maxLength: 4096
+                          minLength: 1
                           type: string
                       type: object
                       x-kubernetes-validations:
@@ -754,8 +757,9 @@ spec:
             type: object
         type: object
         x-kubernetes-validations:
-        - message: metadata.name must be at most 58 characters
-          rule: size(self.metadata.name) <= 58
+        - message: metadata.name must be at most 46 characters (it is embedded in
+            container and volume names)
+          rule: size(self.metadata.name) <= 46
     served: true
     storage: true
     subresources:

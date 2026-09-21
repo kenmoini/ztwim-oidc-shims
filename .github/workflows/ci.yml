@@ -24,6 +24,13 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # The generated CRDs, RBAC and deepcopy code are committed; regenerate them and fail
+      # if anything moved, so a marker change can never land without its manifest.
+      - name: Verify generated manifests and code are up to date
+        run: |
+          make manifests generate
+          git diff --exit-code
+
       # `make lint` downloads the GOLANGCI_LINT_VERSION pinned in the Makefile, so the
       # linter used in CI is exactly the one used locally.
       - name: Run linter
@@ -31,6 +38,15 @@ jobs:
 
       - name: Run unit tests
         run: make test
+
+      # The OpenShift overlay must swap in the RHEL spiffe-helper image and drop
+      # cert-manager entirely; both overlays must also still build.
+      - name: Verify the kustomize overlays
+        run: |
+          make kustomize
+          ./bin/kustomize build config/default > /dev/null
+          ./bin/kustomize build config/openshift | grep -q 'spiffe-helper-rhel9'
+          ! ./bin/kustomize build config/openshift | grep -q cert-manager
 
   e2e:
     name: E2E tests on Kind

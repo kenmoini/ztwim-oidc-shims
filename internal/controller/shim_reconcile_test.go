@@ -27,8 +27,14 @@ import (
 	oidcshimv1alpha1 "github.com/kenmoini/ztwim-oidc-shims/api/v1alpha1"
 )
 
-// fieldAudience is the field name validateShim reports problems with spec.audience under.
-const fieldAudience = "spec.audience"
+const (
+	// fieldAudience is the field name validateShim reports problems with spec.audience under.
+	fieldAudience = "spec.audience"
+	// testShimName is the name every validateShim case is validated under.
+	testShimName = "demo-shim"
+	// tokenMountPath is the token mountPath injection.ResolveToken derives for testShimName.
+	tokenMountPath = "/var/run/secrets/oidcshim/" + testShimName
+)
 
 // TestValidateShim covers every check group of validateShim: each invalid spec must be
 // rejected with a message naming the offending field and, where there is one, the
@@ -118,6 +124,39 @@ func TestValidateShim(t *testing.T) {
 			want: []string{"spec.inject.files[" + testFilePath + "]", "duplicate path"},
 		},
 		{
+			name: "injected file path collides with the token mountPath",
+			mutate: func(spec *oidcshimv1alpha1.OIDCShimSpec) {
+				spec.Inject.Files[0].Path = tokenMountPath
+			},
+			want: []string{"spec.inject.files[" + tokenMountPath + "]", "collides with the token mountPath"},
+		},
+		{
+			name: "injected file path under the token mountPath",
+			// BuildPlan rejects this too: app containers mount the token directory
+			// read-only, so the file could never be created.
+			mutate: func(spec *oidcshimv1alpha1.OIDCShimSpec) {
+				spec.Inject.Files[0].Path = tokenMountPath + "/key.json"
+			},
+			want: []string{
+				"spec.inject.files[" + tokenMountPath + "/key.json]",
+				"under the token mountPath",
+			},
+		},
+		{
+			name: "injected file path merely sharing the token mountPath prefix",
+			mutate: func(spec *oidcshimv1alpha1.OIDCShimSpec) {
+				spec.Inject.Files[0].Path = tokenMountPath + "-extra/key.json"
+			},
+		},
+		{
+			name: "injected file path under an overridden token mountPath",
+			mutate: func(spec *oidcshimv1alpha1.OIDCShimSpec) {
+				spec.Token.MountPath = "/var/run/creds"
+				spec.Inject.Files[0].Path = "/var/run/creds/key.json"
+			},
+			want: []string{"spec.inject.files[/var/run/creds/key.json]", "/var/run/creds"},
+		},
+		{
 			name: "invalid token file mode",
 			mutate: func(spec *oidcshimv1alpha1.OIDCShimSpec) {
 				spec.Token.FileMode = "8888"
@@ -157,7 +196,7 @@ func TestValidateShim(t *testing.T) {
 			spec := validShimSpec()
 			tc.mutate(&spec)
 
-			err := validateShim(&spec, "demo-shim")
+			err := validateShim(&spec, testShimName)
 
 			if len(tc.want) == 0 {
 				if err != nil {
@@ -172,6 +211,44 @@ func TestValidateShim(t *testing.T) {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("validateShim() = %q, want it to mention %q", err.Error(), want)
 				}
+			}
+		})
+	}
+}
+
+// TestValidateShimNameLength pins the cap the CRDs enforce with a CEL rule: the longest
+// derived name is "oidcshim-refresh-<name>", and a container name may not exceed 63
+// characters.
+func TestValidateShimNameLength(t *testing.T) {
+	tests := []struct {
+		name    string
+		length  int
+		wantErr bool
+	}{
+		{name: "at the cap", length: maxShimNameLength},
+		{name: "one over the cap", length: maxShimNameLength + 1, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			shimName := strings.Repeat("a", tc.length)
+			if got := len("oidcshim-refresh-" + shimName); !tc.wantErr && got > 63 {
+				t.Fatalf("the refresh container name is %d characters, more than a container name allows", got)
+			}
+
+			spec := validShimSpec()
+			err := validateShim(&spec, shimName)
+
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("validateShim() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("validateShim() = nil, want a name length error")
+			}
+			if !strings.Contains(err.Error(), "metadata.name") {
+				t.Errorf("validateShim() = %q, want it to mention metadata.name", err.Error())
 			}
 		})
 	}

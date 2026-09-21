@@ -21,20 +21,9 @@ rules:
   - clusteroidcshims
   - oidcshims
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
-- apiGroups:
-  - oidcshim.kemo.dev
-  resources:
-  - clusteroidcshims/finalizers
-  - oidcshims/finalizers
-  verbs:
-  - update
 - apiGroups:
   - oidcshim.kemo.dev
   resources:

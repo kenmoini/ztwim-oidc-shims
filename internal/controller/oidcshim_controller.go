@@ -37,9 +37,10 @@ type OIDCShimReconciler struct {
 	Reader client.Reader
 }
 
-// +kubebuilder:rbac:groups=oidcshim.kemo.dev,resources=oidcshims,verbs=get;list;watch;create;update;patch;delete
+// The controller only reads shims and writes their status: it never creates, deletes or
+// mutates a shim spec, and it sets no finalizer.
+// +kubebuilder:rbac:groups=oidcshim.kemo.dev,resources=oidcshims,verbs=get;list;watch
 // +kubebuilder:rbac:groups=oidcshim.kemo.dev,resources=oidcshims/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=oidcshim.kemo.dev,resources=oidcshims/finalizers,verbs=update
 
 // Reconcile validates the OIDCShim spec and reports the result in its status.
 //

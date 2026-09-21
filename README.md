@@ -14,6 +14,8 @@ For each shim that matches a pod, the webhook adds:
 
 The helper containers run with `runAsNonRoot`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, all capabilities dropped and `seccompProfile: RuntimeDefault`, which is what the `restricted-v2` SCC and the `restricted` Pod Security Standard require. Your application containers are not restarted, re-imaged or otherwise altered beyond the mounts and environment variables above.
 
+**Security note:** granting edit rights on `OIDCShim` in a namespace is equivalent to granting pod-create rights there: `spec.helper.image` and `spec.helper.securityContext` are injected into every pod the shim matches, so whoever can write a shim chooses an image that runs in those pods and the security context it runs with.
+
 ## Prerequisites
 
 - **ZTWIM installed and running**, with a SPIRE server and SPIRE agents healthy on every node the workloads land on.
@@ -57,7 +59,7 @@ Remove either with `make undeploy` / `make undeploy-openshift`.
 
 ## Walkthrough: Google Cloud Workload Identity Federation
 
-`config/samples/oidcshim_v1alpha1_oidcshim_gcp.yaml` is a complete namespaced shim for GCP. It resolves the pool and provider from annotations, builds the STS audience from them with a `template` parameter, writes the JWT-SVID to `/var/run/secrets/oidcshim/gcp/token`, renders an `external_account` credential file next to it and points `GOOGLE_APPLICATION_CREDENTIALS` at it.
+`config/samples/oidcshim_v1alpha1_oidcshim_gcp.yaml` is a complete namespaced shim for GCP. It resolves the pool and provider from annotations, builds the STS audience from them with a `template` parameter, writes the JWT-SVID to `/var/run/secrets/oidcshim/gcp/token`, renders an `external_account` credential file at `/etc/oidcshim/gcp/key.json` and points `GOOGLE_APPLICATION_CREDENTIALS` at it. The credential file deliberately lives *outside* the token mountPath: app containers mount that directory read-only, so nothing can be created inside it.
 
 **1. On the Google side**, create a workload identity pool and an OIDC provider whose issuer URI is your `SpireServer.spec.jwtIssuer`, with the allowed audience set to the pool provider's full resource name (the default audience Google expects). Grant the pool principal `roles/iam.workloadIdentityUser` on the service account you want to impersonate.
 
@@ -123,13 +125,13 @@ spec:
   - name: my-app
     env:
     - name: GOOGLE_APPLICATION_CREDENTIALS
-      value: /var/run/secrets/oidcshim/gcp/key.json
+      value: /etc/oidcshim/gcp/key.json
     volumeMounts:
     - name: oidcshim-token-gcp
       mountPath: /var/run/secrets/oidcshim/gcp
       readOnly: true
     - name: oidcshim-config-gcp
-      mountPath: /var/run/secrets/oidcshim/gcp/key.json
+      mountPath: /etc/oidcshim/gcp/key.json
       subPath: files/0
       readOnly: true
   volumes:
@@ -240,7 +242,10 @@ The webhook is registered with **`failurePolicy: Fail`**, `sideEffects: None`, `
 
 - the manager runs **2 replicas** behind a **PodDisruptionBudget** (`minAvailable: 1`), so a rollout or node drain never empties the webhook endpoint;
 - the `MutatingWebhookConfiguration` carries a **`namespaceSelector`** that skips `kube-system`, `kube-public`, `kube-node-lease`, any namespace labelled `openshift.io/run-level` `"0"` or `"1"`, and any namespace labelled `oidcshim.kemo.dev/webhook: disabled` — including the operator's own namespace, so it can always restart itself;
-- the manager additionally refuses to touch namespaces matching **`--excluded-namespace-prefixes`** (default `kube-`), `--excluded-namespaces`, its own namespace and the ZTWIM namespace, as a second line of defence in case the `namespaceSelector` patch was lost.
+- the manager additionally refuses to touch namespaces matching **`--excluded-namespace-prefixes`** (default `kube-`), `--excluded-namespaces`, its own namespace and the ZTWIM namespace, as a second line of defence in case the `namespaceSelector` patch was lost;
+- the two replicas carry a `topologySpreadConstraint` on `kubernetes.io/hostname` (`maxSkew: 1`, `whenUnsatisfiable: ScheduleAnyway`), so losing one node does not take both of them out at once.
+
+On a cluster where no workload in an `openshift-*` namespace needs injection, set `--excluded-namespace-prefixes=kube-,openshift-`: the platform's own namespaces can then never be blocked by the webhook, at the cost of losing the ability to inject a shim into them (a shim matching a pod in an excluded namespace is silently ignored, with no warning).
 
 Beyond that, nothing about a *single* misconfigured shim blocks pod creation. A shim that fails validation (`Ready=False`, reason `InvalidSpec`), fails selector compilation, is missing a required parameter or fails to render is skipped with an **admission warning** and the pod is admitted without it. The same is true at apply time:
 
@@ -260,6 +265,8 @@ Warnings surface in `kubectl` output on creation and in the API server audit log
 - **Secrets cannot be a parameter source.** Only `static`, `annotation`, `label`, `configMapKeyRef` and `template` are supported. Rendered content is stored in pod annotations, which are readable by anyone who can read the pod, so Secret-sourced values would leak.
 - **No provider presets.** `spec.provider` is an informational hint only; it does not preconfigure audiences, paths or environment variables. Everything comes from the shim spec — start from `config/samples/`.
 - **Label enrolment is single-valued.** Kubernetes label values cannot contain commas, so multi-shim enrolment requires the `oidcshim.kemo.dev/shim` *annotation*.
+- **The webhook reads from an informer cache.** Namespaces, ServiceAccounts and shims are read from the manager's informers, so a pod created within a few hundred milliseconds of annotating its Namespace/ServiceAccount or of creating the shim can be admitted against stale data and miss injection. Recreate the pod (or wait a moment before creating it) — **the operator never retro-injects** a pod that was already admitted.
+- **Every replica holds cluster-wide Namespace and ServiceAccount informers.** The manager's memory therefore scales with the number of Namespaces and ServiceAccounts in the cluster, and each replica pays it independently.
 - **No conversion or validating webhook.** Spec validation is CRD-level (OpenAPI + CEL) plus the controller's `Ready` condition; an invalid shim is rejected at pod admission time, not at `kubectl apply` time.
 
 ## Development
